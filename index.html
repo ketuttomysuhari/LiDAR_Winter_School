@@ -2,86 +2,98 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>A-Frame GLTF Drop Viewer</title>
+  <title>A-Frame GLTF Auto-Ground</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
 
   <style>
-    body { margin:0; background:#0b0f1a; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
-    .drop {
-      position: fixed; left: 12px; top: 12px; z-index: 10;
-      padding: 12px 14px; border-radius: 12px;
-      background: rgba(0,0,0,0.55); color: #fff;
-      border: 1px dashed rgba(255,255,255,0.25);
+    body { margin:0; background:#0b0f1a; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    .ui {
+      position: fixed; top: 12px; left: 12px; z-index: 10;
+      padding: 12px 14px;
+      background: rgba(0,0,0,.55);
+      color: #fff;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,.2);
       backdrop-filter: blur(8px);
-      max-width: 520px;
-      line-height: 1.35;
     }
-    .drop strong { display:block; margin-bottom:6px; }
-    .drop .small { font-size: 13px; opacity: 0.85; }
-    .drop.dragover { border-style: solid; }
+    .ui input {
+      width: 420px; max-width: 100%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,.2);
+      background: rgba(255,255,255,.08);
+      color: #fff;
+      margin-top: 6px;
+    }
   </style>
 </head>
 
 <body>
-  <div id="drop" class="drop">
-    <strong>Drop .glb / .gltf here</strong>
-    <div class="small">
-      Recommended: <b>.glb</b> (single file).<br/>
-      If using .gltf with external textures, ensure assets are accessible.
-    </div>
-  </div>
 
-  <a-scene renderer="colorManagement: true; physicallyCorrectLights: true; antialias: true;"
-           background="color: #0b0f1a" vr-mode-ui="enabled: true">
-    <a-entity light="type: ambient; intensity: 0.6"></a-entity>
-    <a-entity light="type: directional; intensity: 1.0" position="2 4 2"></a-entity>
-    <a-plane rotation="-90 0 0" width="50" height="50" color="#111827"></a-plane>
+<div class="ui">
+  <strong>GLTF / GLB URL</strong><br>
+  <input id="url"
+    value="https://cdn.aframe.io/test-models/models/glTF/Duck/glTF-Binary/Duck.glb">
+</div>
 
-    <a-entity id="model" position="0 0 -3"></a-entity>
+<a-scene
+  renderer="colorManagement: true; physicallyCorrectLights: true"
+  background="color: #0b0f1a">
 
-    <a-entity position="0 1.6 0">
-      <a-camera wasd-controls="acceleration: 25" look-controls="pointerLockEnabled: false"></a-camera>
-    </a-entity>
-  </a-scene>
+  <!-- Lighting -->
+  <a-entity light="type: ambient; intensity: 0.6"></a-entity>
+  <a-entity light="type: directional; intensity: 1.2" position="3 5 2"></a-entity>
 
-  <script>
-    const drop = document.getElementById('drop');
-    const model = document.getElementById('model');
+  <!-- Ground (Y = 0) -->
+  <a-plane
+    rotation="-90 0 0"
+    width="50"
+    height="50"
+    color="#111827"
+    material="roughness:1; metalness:0">
+  </a-plane>
 
-    function setModelFromFile(file){
-      const url = URL.createObjectURL(file);
-      model.setAttribute('gltf-model', url);
+  <!-- Model -->
+  <a-entity id="model"></a-entity>
 
-      // Optional: reset transforms
-      model.setAttribute('position', '0 0 -3');
-      model.setAttribute('rotation', '0 0 0');
-      model.setAttribute('scale', '1 1 1');
-    }
+  <!-- Camera -->
+  <a-entity position="0 1.6 4">
+    <a-camera wasd-controls look-controls></a-camera>
+  </a-entity>
 
-    function isGltfLike(file){
-      const name = (file.name || '').toLowerCase();
-      return name.endsWith('.glb') || name.endsWith('.gltf');
-    }
+</a-scene>
 
-    window.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('dragover'); });
-    window.addEventListener('dragleave', () => drop.classList.remove('dragover'));
-    window.addEventListener('drop', (e) => {
-      e.preventDefault();
-      drop.classList.remove('dragover');
+<script>
+const input = document.getElementById('url');
+const modelEl = document.getElementById('model');
 
-      const file = e.dataTransfer?.files?.[0];
-      if (!file) return;
+function loadModel(url) {
+  modelEl.setAttribute('gltf-model', url);
+}
 
-      if (!isGltfLike(file)){
-        alert('Please drop a .glb or .gltf file.');
-        return;
-      }
-      setModelFromFile(file);
-    });
+input.addEventListener('change', () => loadModel(input.value));
 
-    model.addEventListener('model-loaded', () => console.log('Model loaded'));
-    model.addEventListener('model-error', (e) => console.error('Model error', e.detail));
-  </script>
+/**
+ * AUTO PLACE MODEL ON GROUND
+ */
+modelEl.addEventListener('model-loaded', () => {
+  const mesh = modelEl.getObject3D('mesh');
+  if (!mesh) return;
+
+  // Compute bounding box
+  const box = new THREE.Box3().setFromObject(mesh);
+  const minY = box.min.y;
+
+  // Move model so bottom touches Y=0
+  modelEl.object3D.position.y -= minY;
+
+  console.log('Model grounded. minY:', minY);
+});
+
+// Initial load
+loadModel(input.value);
+</script>
+
 </body>
 </html>
