@@ -1,0 +1,758 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>LAS 1.4 Hybrid LiDAR Analyzer (Static vs Dynamic) — HTML Only</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background:#0b0f17; color:#e8eefc; }
+    header { padding:12px 14px; border-bottom:1px solid rgba(255,255,255,.08); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    header .title { font-weight:700; letter-spacing:.2px; }
+    .wrap { display:grid; grid-template-columns: 360px 1fr; height: calc(100vh - 56px); }
+    aside { border-right:1px solid rgba(255,255,255,.08); padding:12px; overflow:auto; }
+    main { position:relative; }
+    #view { position:absolute; inset:0; }
+    .card { background: rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08); border-radius:14px; padding:12px; margin-bottom:10px; }
+    .card h3 { margin:0 0 8px; font-size:14px; color:#cfe0ff; }
+    label { display:block; font-size:12px; opacity:.9; margin-bottom:6px; }
+    input[type="file"], select, input[type="number"], input[type="range"] {
+      width:100%; box-sizing:border-box; border-radius:10px;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(0,0,0,.25); color:#e8eefc;
+      padding:8px; outline:none;
+    }
+    input[type="range"] { padding:0; }
+    button {
+      width:100%; padding:10px 12px; border-radius:12px;
+      border:1px solid rgba(255,255,255,.12);
+      background: rgba(64,140,255,.18);
+      color:#e8eefc; cursor:pointer; font-weight:600;
+    }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .row { display:grid; grid-template-columns: 1fr 1fr; gap:8px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size:12px; white-space:pre-wrap; }
+    .small { font-size:12px; opacity:.9; line-height:1.35; }
+    .pill { display:inline-block; padding:2px 8px; border:1px solid rgba(255,255,255,.14); border-radius:999px; margin-right:6px; font-size:12px; opacity:.95; }
+    .legend { display:flex; flex-wrap:wrap; gap:6px; }
+    .hint { opacity:.8; font-size:12px; }
+  </style>
+</head>
+
+<body>
+<header>
+  <div class="title">LAS 1.4 Hybrid LiDAR Analyzer (Static vs Dynamic) — HTML Only</div>
+  <div class="hint">Load two .LAS files, compare, colorize, and inspect attributes.</div>
+</header>
+
+<div class="wrap">
+  <aside>
+    <div class="card">
+      <h3>1) Load LAS</h3>
+      <label>Static LAS (.las, uncompressed)</label>
+      <input id="fileStatic" type="file" accept=".las" />
+      <div style="height:8px"></div>
+      <label>Dynamic LAS (.las, uncompressed)</label>
+      <input id="fileDynamic" type="file" accept=".las" />
+      <div style="height:10px"></div>
+
+      <label>Max points to render (sampling)</label>
+      <input id="maxPoints" type="number" min="10000" step="10000" value="600000" />
+      <div style="height:10px"></div>
+
+      <button id="btnLoad" disabled>Load & Render</button>
+      <div style="height:10px"></div>
+      <div class="small">
+        Notes:
+        <ul>
+          <li>Supports LAS 1.4 PDRF 6–10 (standard attributes).</li>
+          <li>Does not decode .LAZ (compressed) in this single-file version.</li>
+          <li>Use sampling for large files to keep browser stable.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>2) Color mode</h3>
+      <label>Mode</label>
+      <select id="colorMode">
+        <option value="dataset" selected>Dataset (Static vs Dynamic)</option>
+        <option value="height">Height (Z)</option>
+        <option value="intensity">Intensity</option>
+        <option value="classification">Classification</option>
+        <option value="return">Return number</option>
+      </select>
+      <div style="height:10px"></div>
+
+      <label>Point size</label>
+      <input id="ptSize" type="range" min="1" max="6" step="0.1" value="2.2" />
+      <div class="small">Tip: gunakan scroll wheel untuk zoom. Drag untuk rotate.</div>
+    </div>
+
+    <div class="card">
+      <h3>3) Summary</h3>
+      <div class="legend">
+        <span class="pill" id="pillStatic">Static: —</span>
+        <span class="pill" id="pillDynamic">Dynamic: —</span>
+        <span class="pill" id="pillTotal">Total: —</span>
+      </div>
+      <div style="height:10px"></div>
+      <div id="summary" class="mono">No data loaded.</div>
+    </div>
+
+    <div class="card">
+      <h3>4) Point inspector</h3>
+      <div class="small">Klik point untuk melihat atributnya.</div>
+      <div style="height:10px"></div>
+      <div id="inspector" class="mono">—</div>
+    </div>
+
+  </aside>
+
+  <main>
+    <div id="view"></div>
+  </main>
+</div>
+
+<!-- Three.js via CDN (ES Modules) -->
+<script type="module">
+  import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+  import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+  // ---------- UI ----------
+  const elFileStatic  = document.getElementById('fileStatic');
+  const elFileDynamic = document.getElementById('fileDynamic');
+  const elBtnLoad     = document.getElementById('btnLoad');
+  const elMaxPoints   = document.getElementById('maxPoints');
+  const elColorMode   = document.getElementById('colorMode');
+  const elPtSize      = document.getElementById('ptSize');
+  const elSummary     = document.getElementById('summary');
+  const elInspector   = document.getElementById('inspector');
+  const pillStatic    = document.getElementById('pillStatic');
+  const pillDynamic   = document.getElementById('pillDynamic');
+  const pillTotal     = document.getElementById('pillTotal');
+
+  function refreshLoadEnabled() {
+    elBtnLoad.disabled = !(elFileStatic.files?.length && elFileDynamic.files?.length);
+  }
+  elFileStatic.addEventListener('change', refreshLoadEnabled);
+  elFileDynamic.addEventListener('change', refreshLoadEnabled);
+
+  // ---------- THREE scene ----------
+  const container = document.getElementById('view');
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0b0f17);
+
+  const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.1, 1e9);
+  camera.position.set(30, 30, 30);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(container.clientWidth, container.clientHeight);
+  container.appendChild(renderer.domElement);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.06;
+
+  const light = new THREE.HemisphereLight(0xffffff, 0x223355, 0.6);
+  scene.add(light);
+
+  const grid = new THREE.GridHelper(50, 50, 0x334455, 0x223344);
+  grid.position.y = 0;
+  grid.material.opacity = 0.25;
+  grid.material.transparent = true;
+  scene.add(grid);
+
+  window.addEventListener('resize', () => {
+    camera.aspect = container.clientWidth / container.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(container.clientWidth, container.clientHeight);
+  });
+
+  // ---------- LAS parsing helpers ----------
+  function readString(u8, offset, len) {
+    let s = '';
+    for (let i = 0; i < len; i++) {
+      const c = u8[offset + i];
+      if (c === 0) break;
+      s += String.fromCharCode(c);
+    }
+    return s;
+  }
+
+  function u64(dv, offset, little = true) {
+    // JS Number safe up to 2^53-1; for LAS counts typically within this
+    const lo = dv.getUint32(offset + (little ? 0 : 4), little);
+    const hi = dv.getUint32(offset + (little ? 4 : 0), little);
+    return hi * 4294967296 + lo;
+  }
+
+  function parseVLRs(arrayBuffer, headerSize, numVLRs) {
+    // VLR header: 54 bytes each, payload length: uint16 at offset 20 of VLR header
+    // Layout: reserved(2), user_id(16), record_id(2), rec_len_after_header(2), description(32)
+    const dv = new DataView(arrayBuffer);
+    const u8 = new Uint8Array(arrayBuffer);
+    const vlrs = [];
+    let ptr = headerSize;
+    for (let i = 0; i < numVLRs; i++) {
+      const userId = readString(u8, ptr + 2, 16).trim();
+      const recordId = dv.getUint16(ptr + 18, true);
+      const recLen = dv.getUint16(ptr + 20, true);
+      const desc = readString(u8, ptr + 22, 32).trim();
+      const payloadStart = ptr + 54;
+      const payloadEnd = payloadStart + recLen;
+      vlrs.push({
+        userId, recordId, desc,
+        recLen,
+        payload: arrayBuffer.slice(payloadStart, payloadEnd)
+      });
+      ptr = payloadEnd;
+    }
+    return vlrs;
+  }
+
+  function tryParseExtraBytesVLR(vlrs) {
+    // Spec-identifying combo: user_id="LASF_Spec", record_id=4 (Extra Bytes)
+    // Many tools document this convention. We'll do best-effort parsing.
+    const eb = vlrs.find(v => v.userId === 'LASF_Spec' && v.recordId === 4);
+    if (!eb) return null;
+
+    const payload = eb.payload;
+    if (payload.byteLength % 192 !== 0) {
+      return { rawBytes: payload.byteLength, records: [], note: 'ExtraBytes payload not multiple of 192 bytes.' };
+    }
+
+    const dv = new DataView(payload);
+    const u8 = new Uint8Array(payload);
+    const n = payload.byteLength / 192;
+    const records = [];
+    for (let i = 0; i < n; i++) {
+      const base = i * 192;
+
+      // Best-effort: many implementations store data_type & options in first 2 bytes,
+      // name as 32 bytes immediately following.
+      const dataType = dv.getUint8(base + 0);
+      const options  = dv.getUint8(base + 1);
+      const name     = readString(u8, base + 2, 32).trim();
+
+      // description often exists later; attempt last 32 bytes
+      const description = readString(u8, base + 160, 32).trim();
+
+      records.push({ name, dataType, options, description });
+    }
+    return { rawBytes: payload.byteLength, records, note: 'Best-effort decode (name/desc offsets may vary by writer).' };
+  }
+
+  function parseLAS(arrayBuffer) {
+    const dv = new DataView(arrayBuffer);
+    const u8 = new Uint8Array(arrayBuffer);
+
+    const signature = readString(u8, 0, 4);
+    if (signature !== 'LASF') throw new Error('Not a LAS file (missing LASF signature).');
+
+    const versionMajor = dv.getUint8(24);
+    const versionMinor = dv.getUint8(25);
+
+    const headerSize = dv.getUint16(94, true);
+    const offsetToPointData32 = dv.getUint32(96, true);
+    const numVLRs = dv.getUint32(100, true);
+
+    const pointFormat = dv.getUint8(104);
+    const pointRecordLength = dv.getUint16(105, true);
+    const legacyNumPoints = dv.getUint32(107, true);
+
+    const scale = {
+      x: dv.getFloat64(131, true),
+      y: dv.getFloat64(139, true),
+      z: dv.getFloat64(147, true),
+    };
+    const offset = {
+      x: dv.getFloat64(155, true),
+      y: dv.getFloat64(163, true),
+      z: dv.getFloat64(171, true),
+    };
+
+    // LAS 1.4 extended fields are located in the 375-byte header (commonly):
+    // extended offset @ 235, extended number of points @ 243 (uint64).
+    // (Common practice referenced by tool vendors when legacy fields are zero.)
+    let offsetToPointData = offsetToPointData32;
+    let numPoints = legacyNumPoints;
+
+    if (versionMajor === 1 && versionMinor >= 4) {
+      const extOffset = u64(dv, 235, true);
+      const extNumPoints = u64(dv, 243, true);
+
+      if (offsetToPointData32 === 0 && extOffset > 0) offsetToPointData = extOffset;
+      if (legacyNumPoints === 0 && extNumPoints > 0) numPoints = extNumPoints;
+    }
+
+    const systemId = readString(u8, 26, 32).trim();
+    const software = readString(u8, 58, 32).trim();
+
+    const vlrs = parseVLRs(arrayBuffer, headerSize, numVLRs);
+    const extraBytesVLR = tryParseExtraBytesVLR(vlrs);
+
+    return {
+      signature,
+      versionMajor, versionMinor,
+      systemId, software,
+      headerSize, offsetToPointData, numVLRs,
+      pointFormat, pointRecordLength,
+      numPoints,
+      scale, offset,
+      vlrs,
+      extraBytesVLR,
+      buffer: arrayBuffer
+    };
+  }
+
+  function baseLengthForPointFormat(fmt) {
+    // Standard LAS 1.4 point formats (6-10)
+    // Format 6: 30 bytes core
+    // 7: + RGB (6) => 36
+    // 8: + RGBNIR (8) => 38
+    // 9: + WavePacket (29) => 59
+    // 10: 9 + RGBNIR (8) => 67
+    // If fmt < 6, not handled in this analyzer.
+    switch (fmt) {
+      case 6: return 30;
+      case 7: return 36;
+      case 8: return 38;
+      case 9: return 59;
+      case 10: return 67;
+      default: return null;
+    }
+  }
+
+  function decodePointPDRF6to10(dv, p, fmt) {
+    // Returns standard attributes for LAS 1.4 PDRF 6-10.
+    // Coordinates are raw int32; caller applies scale+offset.
+    const X = dv.getInt32(p + 0, true);
+    const Y = dv.getInt32(p + 4, true);
+    const Z = dv.getInt32(p + 8, true);
+    const intensity = dv.getUint16(p + 12, true);
+
+    const rn_nr = dv.getUint8(p + 14);
+    const returnNumber = rn_nr & 0x0F;
+    const numberOfReturns = (rn_nr >> 4) & 0x0F;
+
+    const flags = dv.getUint8(p + 15);
+    const classificationFlags = flags & 0x0F;
+    const scannerChannel = (flags >> 4) & 0x03;
+    const scanDirectionFlag = (flags >> 6) & 0x01;
+    const edgeOfFlightLine = (flags >> 7) & 0x01;
+
+    const classification = dv.getUint8(p + 16);
+    const userData = dv.getUint8(p + 17);
+
+    const scanAngle = dv.getInt16(p + 18, true); // 0.006 degrees units in LAS 1.4 formats 6-10 (per common documentation)
+    const pointSourceId = dv.getUint16(p + 20, true);
+
+    const gpsTime = dv.getFloat64(p + 22, true);
+
+    let o = {
+      X, Y, Z,
+      intensity,
+      returnNumber,
+      numberOfReturns,
+      classificationFlags,
+      scannerChannel,
+      scanDirectionFlag,
+      edgeOfFlightLine,
+      classification,
+      userData,
+      scanAngle,
+      pointSourceId,
+      gpsTime,
+      hasRGB: false,
+      hasNIR: false,
+      hasWave: false
+    };
+
+    if (fmt === 7 || fmt === 8 || fmt === 10) {
+      const base = (fmt === 7) ? 30 : 30; // RGB starts after core 30 bytes for 7/8/10
+      const r = dv.getUint16(p + base + 0, true);
+      const g = dv.getUint16(p + base + 2, true);
+      const b = dv.getUint16(p + base + 4, true);
+      o.rgb = { r, g, b };
+      o.hasRGB = true;
+
+      if (fmt === 8 || fmt === 10) {
+        const nir = dv.getUint16(p + base + 6, true);
+        o.nir = nir;
+        o.hasNIR = true;
+      }
+    }
+
+    if (fmt === 9 || fmt === 10) {
+      // Wave packet appended to Format 6 core
+      // Fields (29 bytes): descriptorIndex(1), byteOffset(8), packetSize(4),
+      // returnPointWaveformLocation(4), Xt(4), Yt(4), Zt(4)
+      const wp = 30; // after core 30
+      const waveformPacketDescriptorIndex = dv.getUint8(p + wp + 0);
+      const byteOffsetToWaveformData = u64(dv, p + wp + 1, true);
+      const waveformPacketSizeInBytes = dv.getUint32(p + wp + 9, true);
+      const returnPointWaveformLocation = dv.getFloat32(p + wp + 13, true);
+      const Xt = dv.getFloat32(p + wp + 17, true);
+      const Yt = dv.getFloat32(p + wp + 21, true);
+      const Zt = dv.getFloat32(p + wp + 25, true);
+      o.wave = {
+        waveformPacketDescriptorIndex,
+        byteOffsetToWaveformData,
+        waveformPacketSizeInBytes,
+        returnPointWaveformLocation,
+        Xt, Yt, Zt
+      };
+      o.hasWave = true;
+    }
+
+    return o;
+  }
+
+  function sampleIndices(nPoints, maxPoints) {
+    if (nPoints <= maxPoints) {
+      const idx = new Uint32Array(nPoints);
+      for (let i = 0; i < nPoints; i++) idx[i] = i;
+      return idx;
+    }
+    // Reservoir-like random sampling (fast)
+    const idx = new Uint32Array(maxPoints);
+    for (let i = 0; i < maxPoints; i++) idx[i] = (Math.random() * nPoints) | 0;
+    return idx;
+  }
+
+  function computeStats(points) {
+    // points: array of decoded objects with scaled x,y,z and intensity, classification...
+    const stats = {
+      count: points.length,
+      min: { x: +Infinity, y: +Infinity, z: +Infinity, intensity: +Infinity },
+      max: { x: -Infinity, y: -Infinity, z: -Infinity, intensity: -Infinity },
+      cls: new Map()
+    };
+
+    for (const p of points) {
+      stats.min.x = Math.min(stats.min.x, p.x);
+      stats.min.y = Math.min(stats.min.y, p.y);
+      stats.min.z = Math.min(stats.min.z, p.z);
+      stats.min.intensity = Math.min(stats.min.intensity, p.intensity);
+
+      stats.max.x = Math.max(stats.max.x, p.x);
+      stats.max.y = Math.max(stats.max.y, p.y);
+      stats.max.z = Math.max(stats.max.z, p.z);
+      stats.max.intensity = Math.max(stats.max.intensity, p.intensity);
+
+      const k = p.classification;
+      stats.cls.set(k, (stats.cls.get(k) || 0) + 1);
+    }
+    return stats;
+  }
+
+  // ---------- Rendering ----------
+  let pointMesh = null;
+  let mergedPoints = []; // for picking
+  let mergedStats = null;
+
+  function makeColor(mode, p, global) {
+    // returns [r,g,b] 0..1
+    if (mode === 'dataset') {
+      // dataset: static blue-ish, dynamic red-ish
+      return p.dataset === 'static' ? [0.25, 0.55, 1.0] : [1.0, 0.35, 0.35];
+    }
+    if (mode === 'height') {
+      const t = (p.z - global.minZ) / Math.max(1e-9, (global.maxZ - global.minZ));
+      return [t, 0.6*(1-t), 1.0 - t*0.8];
+    }
+    if (mode === 'intensity') {
+      const t = (p.intensity - global.minI) / Math.max(1e-9, (global.maxI - global.minI));
+      return [t, t, t];
+    }
+    if (mode === 'classification') {
+      // deterministic palette from class id
+      const c = p.classification & 255;
+      const r = ((c * 97) % 255) / 255;
+      const g = ((c * 57) % 255) / 255;
+      const b = ((c * 17) % 255) / 255;
+      return [r, g, b];
+    }
+    if (mode === 'return') {
+      const t = Math.min(1, (p.returnNumber || 0) / 15);
+      return [1.0 - t, 0.25 + t*0.65, t];
+    }
+    return [1,1,1];
+  }
+
+  function renderPoints(points, mode) {
+    if (pointMesh) {
+      scene.remove(pointMesh);
+      pointMesh.geometry.dispose();
+      pointMesh.material.dispose();
+      pointMesh = null;
+    }
+
+    const n = points.length;
+    const pos = new Float32Array(n * 3);
+    const col = new Float32Array(n * 3);
+
+    const global = {
+      minZ: mergedStats ? mergedStats.min.z : 0,
+      maxZ: mergedStats ? mergedStats.max.z : 1,
+      minI: mergedStats ? mergedStats.min.intensity : 0,
+      maxI: mergedStats ? mergedStats.max.intensity : 1
+    };
+
+    for (let i = 0; i < n; i++) {
+      const p = points[i];
+      pos[i*3+0] = p.x;
+      pos[i*3+1] = p.y;
+      pos[i*3+2] = p.z;
+
+      const [r,g,b] = makeColor(mode, p, global);
+      col[i*3+0] = r;
+      col[i*3+1] = g;
+      col[i*3+2] = b;
+    }
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geom.setAttribute('color', new THREE.BufferAttribute(col, 3));
+
+    const mat = new THREE.PointsMaterial({
+      size: parseFloat(elPtSize.value),
+      vertexColors: true,
+      sizeAttenuation: true
+    });
+
+    pointMesh = new THREE.Points(geom, mat);
+    scene.add(pointMesh);
+
+    // frame to data
+    const box = new THREE.Box3().setFromObject(pointMesh);
+    const size = box.getSize(new THREE.Vector3()).length();
+    const center = box.getCenter(new THREE.Vector3());
+    controls.target.copy(center);
+    camera.position.copy(center.clone().add(new THREE.Vector3(size*0.35, size*0.35, size*0.35)));
+    camera.near = Math.max(0.01, size / 10000);
+    camera.far  = Math.max(1000, size * 10);
+    camera.updateProjectionMatrix();
+    controls.update();
+  }
+
+  // ---------- Picking (click point) ----------
+  const raycaster = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+
+  renderer.domElement.addEventListener('click', (ev) => {
+    if (!pointMesh || mergedPoints.length === 0) return;
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouse.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+
+    raycaster.params.Points.threshold = 0.25;
+    raycaster.setFromCamera(mouse, camera);
+
+    const intersects = raycaster.intersectObject(pointMesh);
+    if (!intersects.length) return;
+
+    const i = intersects[0].index;
+    const p = mergedPoints[i];
+
+    elInspector.textContent =
+`dataset: ${p.dataset}
+x,y,z: ${p.x.toFixed(4)}, ${p.y.toFixed(4)}, ${p.z.toFixed(4)}
+intensity: ${p.intensity}
+classification: ${p.classification}
+returnNumber / numReturns: ${p.returnNumber} / ${p.numberOfReturns}
+scanAngle(raw): ${p.scanAngle}
+pointSourceId: ${p.pointSourceId}
+scannerChannel: ${p.scannerChannel}
+scanDirectionFlag: ${p.scanDirectionFlag}
+edgeOfFlightLine: ${p.edgeOfFlightLine}
+classificationFlags: ${p.classificationFlags}
+userData: ${p.userData}
+gpsTime: ${Number.isFinite(p.gpsTime) ? p.gpsTime : '—'}
+rgb: ${p.rgb ? `${p.rgb.r},${p.rgb.g},${p.rgb.b}` : '—'}
+nir: ${p.nir ?? '—'}
+wave: ${p.wave ? JSON.stringify(p.wave) : '—'}
+extraBytesLen(per point): ${p.extraBytesLen ?? 0}`;
+  });
+
+  // ---------- Load workflow ----------
+  async function readFileAsArrayBuffer(file) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onerror = () => reject(fr.error);
+      fr.onload = () => resolve(fr.result);
+      fr.readAsArrayBuffer(file);
+    });
+  }
+
+  function decodeLASPoints(las, datasetLabel, maxPoints) {
+    const dv = new DataView(las.buffer);
+    const fmt = las.pointFormat;
+    const baseLen = baseLengthForPointFormat(fmt);
+    if (baseLen === null) {
+      throw new Error(`Unsupported point format ${fmt}. This analyzer targets LAS 1.4 formats 6–10.`);
+    }
+
+    const extraBytesLen = Math.max(0, las.pointRecordLength - baseLen);
+    const indices = sampleIndices(las.numPoints, maxPoints);
+
+    const pts = new Array(indices.length);
+    const start = las.offsetToPointData;
+
+    for (let i = 0; i < indices.length; i++) {
+      const idx = indices[i];
+      const p = start + idx * las.pointRecordLength;
+
+      const raw = decodePointPDRF6to10(dv, p, fmt);
+
+      const x = raw.X * las.scale.x + las.offset.x;
+      const y = raw.Y * las.scale.y + las.offset.y;
+      const z = raw.Z * las.scale.z + las.offset.z;
+
+      pts[i] = {
+        dataset: datasetLabel,
+        x, y, z,
+        intensity: raw.intensity,
+        classification: raw.classification,
+        returnNumber: raw.returnNumber,
+        numberOfReturns: raw.numberOfReturns,
+        scanAngle: raw.scanAngle,
+        pointSourceId: raw.pointSourceId,
+        scannerChannel: raw.scannerChannel,
+        scanDirectionFlag: raw.scanDirectionFlag,
+        edgeOfFlightLine: raw.edgeOfFlightLine,
+        classificationFlags: raw.classificationFlags,
+        userData: raw.userData,
+        gpsTime: raw.gpsTime,
+        rgb: raw.rgb,
+        nir: raw.nir,
+        wave: raw.wave,
+        extraBytesLen
+      };
+    }
+    return { points: pts, extraBytesLen };
+  }
+
+  function formatMapTopK(map, k=12) {
+    const arr = Array.from(map.entries()).sort((a,b)=>b[1]-a[1]).slice(0,k);
+    return arr.map(([cls,cnt]) => `  class ${cls}: ${cnt}`).join('\n');
+  }
+
+  function updateSummary(staticLas, dynamicLas, st, dy, merged, mergedEbInfo) {
+    pillStatic.textContent  = `Static: ${st.count.toLocaleString()}`;
+    pillDynamic.textContent = `Dynamic: ${dy.count.toLocaleString()}`;
+    pillTotal.textContent   = `Total: ${merged.count.toLocaleString()}`;
+
+    const ebStatic = staticLas.extraBytesVLR;
+    const ebDynamic = dynamicLas.extraBytesVLR;
+
+    elSummary.textContent =
+`[STATIC HEADER]
+version: ${staticLas.versionMajor}.${staticLas.versionMinor}
+system_id: ${staticLas.systemId || '—'}
+software: ${staticLas.software || '—'}
+pointFormat: ${staticLas.pointFormat}
+pointRecordLength: ${staticLas.pointRecordLength} (extraBytes per point: ${Math.max(0, staticLas.pointRecordLength - (baseLengthForPointFormat(staticLas.pointFormat)||0))})
+numPoints(header): ${staticLas.numPoints}
+offsetToPointData: ${staticLas.offsetToPointData}
+scale(x,y,z): ${staticLas.scale.x}, ${staticLas.scale.y}, ${staticLas.scale.z}
+offset(x,y,z): ${staticLas.offset.x}, ${staticLas.offset.y}, ${staticLas.offset.z}
+VLR count: ${staticLas.numVLRs}
+ExtraBytes VLR: ${ebStatic ? `YES (${ebStatic.rawBytes} bytes payload)` : 'NO'}
+
+[STATIC STATS (sample)]
+min(x,y,z): ${st.min.x.toFixed(3)}, ${st.min.y.toFixed(3)}, ${st.min.z.toFixed(3)}
+max(x,y,z): ${st.max.x.toFixed(3)}, ${st.max.y.toFixed(3)}, ${st.max.z.toFixed(3)}
+intensity min/max: ${st.min.intensity} / ${st.max.intensity}
+top classes:
+${formatMapTopK(st.cls)}
+
+[DYNAMIC HEADER]
+version: ${dynamicLas.versionMajor}.${dynamicLas.versionMinor}
+system_id: ${dynamicLas.systemId || '—'}
+software: ${dynamicLas.software || '—'}
+pointFormat: ${dynamicLas.pointFormat}
+pointRecordLength: ${dynamicLas.pointRecordLength} (extraBytes per point: ${Math.max(0, dynamicLas.pointRecordLength - (baseLengthForPointFormat(dynamicLas.pointFormat)||0))})
+numPoints(header): ${dynamicLas.numPoints}
+offsetToPointData: ${dynamicLas.offsetToPointData}
+VLR count: ${dynamicLas.numVLRs}
+ExtraBytes VLR: ${ebDynamic ? `YES (${ebDynamic.rawBytes} bytes payload)` : 'NO'}
+
+[DYNAMIC STATS (sample)]
+min(x,y,z): ${dy.min.x.toFixed(3)}, ${dy.min.y.toFixed(3)}, ${dy.min.z.toFixed(3)}
+max(x,y,z): ${dy.max.x.toFixed(3)}, ${dy.max.y.toFixed(3)}, ${dy.max.z.toFixed(3)}
+intensity min/max: ${dy.min.intensity} / ${dy.max.intensity}
+top classes:
+${formatMapTopK(dy.cls)}
+
+[MERGED SAMPLE SUMMARY]
+merged minZ/maxZ: ${merged.min.z.toFixed(3)} / ${merged.max.z.toFixed(3)}
+merged intensity min/max: ${merged.min.intensity} / ${merged.max.intensity}
+
+[EXTRA BYTES (best-effort)]
+static: ${ebStatic?.records?.length ? ebStatic.records.map(r => `  - ${r.name || '(unnamed)'} (dataType=${r.dataType}, options=${r.options}) ${r.description ? '— '+r.description : ''}`).join('\\n') : (ebStatic ? '  (found, but no parsed records or names empty)' : '  none')}
+dynamic: ${ebDynamic?.records?.length ? ebDynamic.records.map(r => `  - ${r.name || '(unnamed)'} (dataType=${r.dataType}, options=${r.options}) ${r.description ? '— '+r.description : ''}`).join('\\n') : (ebDynamic ? '  (found, but no parsed records or names empty)' : '  none')}`;
+  }
+
+  elBtnLoad.addEventListener('click', async () => {
+    try {
+      elBtnLoad.disabled = true;
+      elSummary.textContent = 'Loading files…';
+
+      const maxPts = Math.max(10000, parseInt(elMaxPoints.value || '600000', 10));
+
+      const [bufS, bufD] = await Promise.all([
+        readFileAsArrayBuffer(elFileStatic.files[0]),
+        readFileAsArrayBuffer(elFileDynamic.files[0])
+      ]);
+
+      const lasS = parseLAS(bufS);
+      const lasD = parseLAS(bufD);
+
+      // Hard gate: focus on LAS 1.4 formats 6-10
+      if (!([6,7,8,9,10].includes(lasS.pointFormat) && [6,7,8,9,10].includes(lasD.pointFormat))) {
+        throw new Error(`This analyzer targets LAS 1.4 Point Formats 6–10. Found: static=${lasS.pointFormat}, dynamic=${lasD.pointFormat}`);
+      }
+
+      const sDecoded = decodeLASPoints(lasS, 'static', Math.floor(maxPts/2));
+      const dDecoded = decodeLASPoints(lasD, 'dynamic', Math.floor(maxPts/2));
+
+      mergedPoints = [...sDecoded.points, ...dDecoded.points];
+      const st = computeStats(sDecoded.points);
+      const dy = computeStats(dDecoded.points);
+      mergedStats = computeStats(mergedPoints);
+
+      updateSummary(lasS, lasD, st, dy, mergedStats);
+
+      renderPoints(mergedPoints, elColorMode.value);
+
+      elBtnLoad.disabled = false;
+    } catch (e) {
+      console.error(e);
+      elSummary.textContent = `ERROR: ${e?.message || e}`;
+      elBtnLoad.disabled = false;
+    }
+  });
+
+  elColorMode.addEventListener('change', () => {
+    if (!mergedPoints.length) return;
+    renderPoints(mergedPoints, elColorMode.value);
+  });
+
+  elPtSize.addEventListener('input', () => {
+    if (pointMesh) pointMesh.material.size = parseFloat(elPtSize.value);
+  });
+
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  animate();
+
+</script>
+</body>
+</html>
