@@ -1,366 +1,749 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Hybrid LiDAR Viewer + Cross Section Profile</title>
+  <meta charset="utf-8" />
+  <title>Hybrid LiDAR Analysis (Static vs Dynamic) — HTML Only</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
+  <!-- Import maps: Three.js + loaders.gl via esm.sh (ESM CDN) -->
   <script type="importmap">
   {
     "imports": {
       "three": "https://unpkg.com/three@0.158.0/build/three.module.js",
-      "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/"
+      "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/",
+      "@loaders.gl/core": "https://esm.sh/@loaders.gl/core@4.0.4",
+      "@loaders.gl/las": "https://esm.sh/@loaders.gl/las@4.0.4"
     }
   }
   </script>
 
   <style>
-    body { margin:0; overflow:hidden; background:#000; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
-    #hud {
-      position: fixed; top: 10px; left: 10px; z-index: 10;
-      color: #fff; background: rgba(0,0,0,0.6);
-      padding: 10px 12px; border-radius: 10px; max-width: 380px;
+    :root{
+      --bg: #0b0f14;
+      --panel: rgba(0,0,0,0.55);
+      --text: rgba(255,255,255,0.9);
+      --muted: rgba(255,255,255,0.7);
+      --border: rgba(255,255,255,0.15);
     }
-    #hud b { display:block; margin-bottom:6px; }
-    #hud .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-    #hud label { font-size: 12px; opacity: 0.9; }
-    #hud input[type="range"]{ width: 180px; }
+    body { margin:0; overflow:hidden; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;}
+    #topbar{
+      position: fixed; left: 10px; top: 10px; z-index: 20;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px; width: min(520px, calc(100vw - 20px));
+      backdrop-filter: blur(8px);
+    }
+    #topbar h1{ font-size: 14px; margin: 0 0 8px 0; font-weight: 650; }
+    #grid{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .drop{
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      min-height: 92px;
+      display:flex; flex-direction:column; justify-content:space-between;
+    }
+    .drop b{ font-size: 12px; }
+    .drop small{ color: var(--muted); line-height: 1.3; }
+    .row{ display:flex; gap: 10px; flex-wrap:wrap; align-items:center; margin-top: 10px;}
+    button{
+      background: rgba(255,255,255,0.10);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      cursor: pointer;
+    }
+    button:hover{ background: rgba(255,255,255,0.14); }
+    input[type="range"]{ width: 180px; }
+    .kpi{
+      margin-top: 10px;
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .kpi code{ color: var(--text); }
     #profileWrap{
-      position: fixed; left: 10px; bottom: 10px; z-index: 10;
-      background: rgba(0,0,0,0.6); border-radius: 10px; padding: 10px;
-      color:#fff;
+      position: fixed; left: 10px; bottom: 10px; z-index: 20;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 10px;
+      backdrop-filter: blur(8px);
     }
-    #profile { display:block; border-radius: 8px; background:#111; }
-    #legend { font-size: 12px; margin-top: 6px; opacity: 0.9; }
-    .pill { display:inline-block; padding:2px 8px; border-radius: 999px; margin-right: 6px; }
-    .blue { background: rgba(0,160,255,0.25); border: 1px solid rgba(0,160,255,0.7); }
-    .red  { background: rgba(255,80,80,0.25); border: 1px solid rgba(255,80,80,0.7); }
-    #badge { font-size: 12px; opacity: 0.85; margin-top: 6px; }
+    #profileTitle{ font-size: 13px; margin-bottom: 6px; color: var(--text); }
+    #profile{ display:block; border-radius: 10px; background:#0f1620; }
+    #legend{ font-size: 12px; color: var(--muted); margin-top: 6px; }
+    .pill{ display:inline-block; padding:2px 8px; border-radius: 999px; margin-right: 6px; border: 1px solid var(--border); }
+    .blue{ background: rgba(0,160,255,0.18); }
+    .red{ background: rgba(255,80,80,0.18); }
+    #toast{
+      position: fixed; right: 10px; top: 10px; z-index: 30;
+      background: rgba(0,0,0,0.7); border: 1px solid var(--border);
+      border-radius: 12px; padding: 10px 12px; max-width: 360px; display:none;
+    }
+    #toast small{ color: var(--muted); }
   </style>
 </head>
 
 <body>
-  <div id="hud">
-    <b>Hybrid LiDAR Viewer</b>
-    <div>Click 2 points to define the cross-section line (A → B).</div>
-    <div class="row" style="margin-top:8px;">
-      <label>Section width (m):</label>
-      <input id="width" type="range" min="0.02" max="1.0" step="0.02" value="0.20">
-      <span id="widthVal">0.20</span>
+  <div id="topbar">
+    <h1>Hybrid LiDAR Analysis — Static (Blue) vs Dynamic (Red)</h1>
+
+    <div id="grid">
+      <div class="drop" id="dropStatic">
+        <div>
+          <b>STATIC (TLS / reference)</b><br/>
+          <small>Drag & drop <code>.las</code> / <code>.laz</code> here, or click to choose.</small>
+        </div>
+        <div class="row">
+          <input type="file" id="fileStatic" accept=".las,.laz" />
+        </div>
+      </div>
+
+      <div class="drop" id="dropDynamic">
+        <div>
+          <b>DYNAMIC (mobile / kinematic)</b><br/>
+          <small>Drag & drop <code>.las</code> / <code>.laz</code> here, or click to choose.</small>
+        </div>
+        <div class="row">
+          <input type="file" id="fileDynamic" accept=".las,.laz" />
+        </div>
+      </div>
     </div>
-    <div class="row" style="margin-top:6px;">
-      <button id="reset">Reset section</button>
-      <button id="toggleLine">Toggle line</button>
+
+    <div class="row">
+      <span style="font-size:12px;color:var(--muted)">Section width (m)</span>
+      <input id="sectionWidth" type="range" min="0.02" max="2.0" step="0.02" value="0.30">
+      <span id="sectionWidthVal" style="font-size:12px;color:var(--text)">0.30</span>
+
+      <span style="font-size:12px;color:var(--muted)">Downsample (voxel, m)</span>
+      <input id="voxel" type="range" min="0.02" max="0.50" step="0.01" value="0.08">
+      <span id="voxelVal" style="font-size:12px;color:var(--text)">0.08</span>
     </div>
-    <div id="badge">Static = Blue, Dynamic = Red</div>
+
+    <div class="row">
+      <button id="resetSection">Reset section</button>
+      <button id="recalcError">Recompute error</button>
+      <button id="clearAll">Clear all</button>
+    </div>
+
+    <div class="kpi" id="kpi">
+      <div><small>How to use:</small></div>
+      <div>1) Load both datasets. 2) Click 2 points in 3D to define cross section (A → B). 3) Profile + error metrics will update.</div>
+      <div style="margin-top:6px;"><small>Status:</small> <span id="status">Waiting for uploads…</span></div>
+      <div style="margin-top:6px;"><small>Error metrics (Dynamic → Static, approx NN):</small></div>
+      <div id="errOut">Not computed.</div>
+    </div>
   </div>
 
   <div id="profileWrap">
-    <div style="font-size:13px; margin-bottom:6px;">Profile / Cross Section</div>
-    <canvas id="profile" width="520" height="220"></canvas>
+    <div id="profileTitle">Profile / Cross Section</div>
+    <canvas id="profile" width="560" height="240"></canvas>
     <div id="legend">
       <span class="pill blue">Static</span>
       <span class="pill red">Dynamic</span>
-      <span style="opacity:.8;">(X = along-section distance, Y = elevation)</span>
+      <span style="opacity:.9;">X = along-section distance, Y = elevation</span>
     </div>
   </div>
+
+  <div id="toast"></div>
 
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { load } from '@loaders.gl/core';
+import { LASLoader } from '@loaders.gl/las';
 
+const statusEl = document.getElementById('status');
+const errOutEl = document.getElementById('errOut');
+const toastEl = document.getElementById('toast');
+
+function toast(msg, detail=""){
+  toastEl.style.display = "block";
+  toastEl.innerHTML = `<div style="font-size:13px;margin-bottom:2px">${msg}</div>` + (detail ? `<small>${detail}</small>` : "");
+  setTimeout(()=>toastEl.style.display="none", 3500);
+}
+
+// ---------- THREE.JS SCENE ----------
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x000000);
+scene.background = new THREE.Color(0x0b0f14);
 
-const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.05, 2000);
-camera.position.set(12, 10, 12);
+const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.05, 5000);
+camera.position.set(15, 10, 15);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(6, 1.5, 3);
-controls.update();
+controls.enableDamping = true;
 
-scene.add(new THREE.GridHelper(30, 30));
+scene.add(new THREE.GridHelper(60, 60));
 scene.add(new THREE.AxesHelper(2));
 
-// ---------- Example point clouds (replace with real data later) ----------
-function createPointCloud({color, offsetX, label}) {
-  const geometry = new THREE.BufferGeometry();
-  const count = 120000;
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
 
-  const positions = new Float32Array(count * 3);
-  const colors = new Float32Array(count * 3);
-  const intensity = new Float32Array(count);
+// ---------- UI ----------
+const sectionWidth = document.getElementById('sectionWidth');
+const sectionWidthVal = document.getElementById('sectionWidthVal');
+sectionWidthVal.textContent = (+sectionWidth.value).toFixed(2);
 
-  for (let i = 0; i < count; i++) {
-    const x = Math.random()*6 + offsetX;
-    const z = Math.random()*6;
-    // Create some "structure" so profile isn't random-flat
-    const y = (Math.sin(x*0.8) + Math.cos(z*0.6))*0.5 + Math.random()*0.15 + 1.0;
+const voxel = document.getElementById('voxel');
+const voxelVal = document.getElementById('voxelVal');
+voxelVal.textContent = (+voxel.value).toFixed(2);
 
-    positions[i*3] = x;
-    positions[i*3+1] = y;
-    positions[i*3+2] = z;
+sectionWidth.addEventListener('input', () => {
+  sectionWidthVal.textContent = (+sectionWidth.value).toFixed(2);
+  if (A && B) drawProfile();
+});
+voxel.addEventListener('input', () => {
+  voxelVal.textContent = (+voxel.value).toFixed(2);
+});
 
-    colors[i*3] = color.r;
-    colors[i*3+1] = color.g;
-    colors[i*3+2] = color.b;
+// ---------- DATA STORAGE ----------
+let staticData = null;   // {positions, intensities, classifications, ...}
+let dynamicData = null;
 
-    intensity[i] = Math.random()*255; // example attribute
+let staticPointsObj = null;
+let dynamicPointsObj = null;
+
+// ---------- BASIC DOWNSAMPLE (voxel grid) ----------
+function voxelDownsample(positions, attrs, voxelSize){
+  // positions: Float32Array (n*3)
+  // attrs: object of Float32Array/Uint8Array with length n (optional)
+  const n = positions.length / 3;
+  const map = new Map();
+  const keepIdx = [];
+
+  for (let i = 0; i < n; i++) {
+    const x = positions[i*3], y = positions[i*3+1], z = positions[i*3+2];
+    const kx = Math.floor(x / voxelSize);
+    const ky = Math.floor(y / voxelSize);
+    const kz = Math.floor(z / voxelSize);
+    const key = `${kx},${ky},${kz}`;
+    if (!map.has(key)) {
+      map.set(key, i);
+      keepIdx.push(i);
+    }
   }
 
+  const m = keepIdx.length;
+  const outPos = new Float32Array(m*3);
+
+  const outAttrs = {};
+  if (attrs) {
+    for (const [name, arr] of Object.entries(attrs)) {
+      // keep same type
+      outAttrs[name] = (arr instanceof Float32Array) ? new Float32Array(m)
+                    : (arr instanceof Uint16Array) ? new Uint16Array(m)
+                    : (arr instanceof Uint8Array)  ? new Uint8Array(m)
+                    : new Float32Array(m);
+    }
+  }
+
+  for (let j = 0; j < m; j++) {
+    const i = keepIdx[j];
+    outPos[j*3] = positions[i*3];
+    outPos[j*3+1] = positions[i*3+1];
+    outPos[j*3+2] = positions[i*3+2];
+
+    if (attrs) {
+      for (const [name, arr] of Object.entries(attrs)) {
+        outAttrs[name][j] = arr[i];
+      }
+    }
+  }
+
+  return { positions: outPos, attrs: outAttrs, count: m };
+}
+
+// ---------- LOAD LAS/LAZ ----------
+async function readLAS(file){
+  statusEl.textContent = `Loading ${file.name} …`;
+  const arrayBuffer = await file.arrayBuffer();
+
+  // loaders.gl LASLoader parses LAS; LAZ support depends on build. If LAZ fails, convert to LAS.
+  const data = await load(arrayBuffer, LASLoader, {
+    las: {
+      // keep everything possible
+      // some builds expose extra dims; we also extract what is available below
+    }
+  });
+
+  // data can be in different shapes depending on version; normalize:
+  // Typically: data.attributes.POSITION.value, INTENSITY, CLASSIFICATION, etc.
+  const attrs = data?.attributes || {};
+  const pos = attrs.POSITION?.value || attrs.position?.value;
+  if (!pos) throw new Error("LAS parsed but POSITION attribute not found.");
+
+  const positions = (pos instanceof Float32Array) ? pos : new Float32Array(pos);
+
+  // optional attributes
+  const intensity = attrs.INTENSITY?.value || attrs.intensity?.value || null;
+  const classification = attrs.CLASSIFICATION?.value || attrs.classification?.value || null;
+  const returnNumber = attrs.RETURN_NUMBER?.value || attrs.returnNumber?.value || null;
+  const numberOfReturns = attrs.NUMBER_OF_RETURNS?.value || attrs.numberOfReturns?.value || null;
+  const gpsTime = attrs.GPS_TIME?.value || attrs.gpsTime?.value || null;
+  const scanAngle = attrs.SCAN_ANGLE_RANK?.value || attrs.scanAngle?.value || null;
+
+  const n = positions.length / 3;
+
+  return {
+    n,
+    positions,
+    intensity: intensity ? (intensity instanceof Float32Array ? intensity : new Float32Array(intensity)) : null,
+    classification: classification ? (classification instanceof Uint8Array ? classification : new Uint8Array(classification)) : null,
+    returnNumber: returnNumber ? (returnNumber instanceof Uint8Array ? returnNumber : new Uint8Array(returnNumber)) : null,
+    numberOfReturns: numberOfReturns ? (numberOfReturns instanceof Uint8Array ? numberOfReturns : new Uint8Array(numberOfReturns)) : null,
+    gpsTime: gpsTime ? (gpsTime instanceof Float64Array ? gpsTime : new Float64Array(gpsTime)) : null,
+    scanAngle: scanAngle ? (scanAngle instanceof Int8Array ? scanAngle : new Int8Array(scanAngle)) : null
+  };
+}
+
+function buildPointsObject(dataset, rgb, name){
+  const { positions } = dataset;
+  const n = positions.length / 3;
+
+  // color buffer
+  const colors = new Float32Array(n*3);
+  for (let i=0;i<n;i++){
+    colors[i*3] = rgb.r; colors[i*3+1] = rgb.g; colors[i*3+2] = rgb.b;
+  }
+
+  const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geometry.setAttribute('intensity', new THREE.BufferAttribute(intensity, 1));
 
-  const material = new THREE.PointsMaterial({ size: 0.03, vertexColors: true });
-  const points = new THREE.Points(geometry, material);
-  points.name = label;
-  return points;
+  // keep intensity as custom attribute if exists
+  if (dataset.intensity) {
+    geometry.setAttribute('intensity', new THREE.BufferAttribute(dataset.intensity, 1));
+  }
+  if (dataset.classification) {
+    geometry.setAttribute('classification', new THREE.BufferAttribute(dataset.classification, 1));
+  }
+
+  const material = new THREE.PointsMaterial({
+    size: 0.04,
+    vertexColors: true,
+    sizeAttenuation: true
+  });
+
+  const pts = new THREE.Points(geometry, material);
+  pts.name = name;
+  return pts;
 }
 
-const staticPC  = createPointCloud({ color: new THREE.Color(0.0, 0.6, 1.0), offsetX: 0.0, label: 'static' });
-const dynamicPC = createPointCloud({ color: new THREE.Color(1.0, 0.25, 0.25), offsetX: 7.0, label: 'dynamic' });
+function centerToDatasets(){
+  const group = new THREE.Group();
+  if (staticPointsObj) group.add(staticPointsObj.clone());
+  if (dynamicPointsObj) group.add(dynamicPointsObj.clone());
 
-scene.add(staticPC);
-scene.add(dynamicPC);
+  const box = new THREE.Box3().setFromObject(group);
+  if (box.isEmpty()) return;
 
-// ---------- Raycast click to set section line ----------
-const raycaster = new THREE.Raycaster();
-raycaster.params.Points.threshold = 0.12; // easier point picking
-const mouse = new THREE.Vector2();
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const radius = Math.max(size.x, size.y, size.z) * 0.6;
 
-let A = null, B = null;
-let sectionLine = null;
-let showLine = true;
+  controls.target.copy(center);
+  camera.position.copy(center).add(new THREE.Vector3(radius, radius*0.7, radius));
+  controls.update();
+}
 
-// markers
-const markerGeom = new THREE.SphereGeometry(0.08, 16, 16);
-const markerMatA = new THREE.MeshBasicMaterial({ color: 0x00ffcc });
-const markerMatB = new THREE.MeshBasicMaterial({ color: 0xffcc00 });
-let markerA = null, markerB = null;
+async function loadStatic(file){
+  try{
+    const raw = await readLAS(file);
+    const v = parseFloat(voxel.value);
+    const ds = voxelDownsample(raw.positions, {
+      intensity: raw.intensity || undefined,
+      classification: raw.classification || undefined
+    }, v);
 
-function setMarker(which, pos) {
-  if (which === 'A') {
-    if (markerA) scene.remove(markerA);
-    markerA = new THREE.Mesh(markerGeom, markerMatA);
-    markerA.position.copy(pos);
-    scene.add(markerA);
-  } else {
-    if (markerB) scene.remove(markerB);
-    markerB = new THREE.Mesh(markerGeom, markerMatB);
-    markerB.position.copy(pos);
-    scene.add(markerB);
+    staticData = {
+      positions: ds.positions,
+      intensity: ds.attrs.intensity || null,
+      classification: ds.attrs.classification || null
+    };
+
+    if (staticPointsObj) scene.remove(staticPointsObj);
+    staticPointsObj = buildPointsObject(staticData, new THREE.Color(0.0, 0.65, 1.0), "static");
+    scene.add(staticPointsObj);
+
+    statusEl.textContent = `Static loaded: ${staticData.positions.length/3} pts (downsample voxel=${v} m)`;
+    toast("Static loaded", file.name);
+    centerToDatasets();
+
+    if (A && B) { drawProfile(); computeError(); }
+  }catch(e){
+    console.error(e);
+    toast("Failed to load STATIC", e.message || String(e));
+    statusEl.textContent = `Static load failed.`;
   }
 }
 
-function updateLine() {
+async function loadDynamic(file){
+  try{
+    const raw = await readLAS(file);
+    const v = parseFloat(voxel.value);
+    const ds = voxelDownsample(raw.positions, {
+      intensity: raw.intensity || undefined,
+      classification: raw.classification || undefined
+    }, v);
+
+    dynamicData = {
+      positions: ds.positions,
+      intensity: ds.attrs.intensity || null,
+      classification: ds.attrs.classification || null
+    };
+
+    if (dynamicPointsObj) scene.remove(dynamicPointsObj);
+    dynamicPointsObj = buildPointsObject(dynamicData, new THREE.Color(1.0, 0.28, 0.28), "dynamic");
+    scene.add(dynamicPointsObj);
+
+    statusEl.textContent = `Dynamic loaded: ${dynamicData.positions.length/3} pts (downsample voxel=${v} m)`;
+    toast("Dynamic loaded", file.name);
+    centerToDatasets();
+
+    if (A && B) { drawProfile(); computeError(); }
+  }catch(e){
+    console.error(e);
+    toast("Failed to load DYNAMIC", e.message || String(e));
+    statusEl.textContent = `Dynamic load failed.`;
+  }
+}
+
+// ---------- Drag & Drop ----------
+function wireDrop(dropEl, fileInput, loaderFn){
+  dropEl.addEventListener('dragover', (e)=>{ e.preventDefault(); dropEl.style.borderColor = 'rgba(255,255,255,0.35)'; });
+  dropEl.addEventListener('dragleave', ()=>{ dropEl.style.borderColor = 'rgba(255,255,255,0.15)'; });
+  dropEl.addEventListener('drop', (e)=>{
+    e.preventDefault();
+    dropEl.style.borderColor = 'rgba(255,255,255,0.15)';
+    const f = e.dataTransfer.files?.[0];
+    if (!f) return;
+    loaderFn(f);
+  });
+  fileInput.addEventListener('change', ()=>{
+    const f = fileInput.files?.[0];
+    if (!f) return;
+    loaderFn(f);
+  });
+}
+
+wireDrop(document.getElementById('dropStatic'), document.getElementById('fileStatic'), loadStatic);
+wireDrop(document.getElementById('dropDynamic'), document.getElementById('fileDynamic'), loadDynamic);
+
+// ---------- Cross Section (A->B via click pick) ----------
+const raycaster = new THREE.Raycaster();
+raycaster.params.Points.threshold = 0.15;
+
+const mouse = new THREE.Vector2();
+let A = null, B = null;
+
+const markerGeom = new THREE.SphereGeometry(0.09, 18, 18);
+let markerA = null, markerB = null;
+let sectionLine = null;
+
+function setMarker(which, pos){
+  const mat = new THREE.MeshBasicMaterial({ color: which === "A" ? 0x00ffd0 : 0xffcc00 });
+  const m = new THREE.Mesh(markerGeom, mat);
+  m.position.copy(pos);
+  scene.add(m);
+  return m;
+}
+
+function updateLine(){
   if (sectionLine) scene.remove(sectionLine);
   if (!A || !B) return;
-
   const geom = new THREE.BufferGeometry().setFromPoints([A, B]);
   const mat = new THREE.LineBasicMaterial({ color: 0xffffff });
   sectionLine = new THREE.Line(geom, mat);
-  sectionLine.visible = showLine;
   scene.add(sectionLine);
 }
 
-function pickPoint(event) {
+function pickPoint(evt){
   const rect = renderer.domElement.getBoundingClientRect();
-  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-  mouse.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+  mouse.x = ((evt.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -(((evt.clientY - rect.top) / rect.height) * 2 - 1);
 
   raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects([staticPC, dynamicPC], false);
-  if (!hits.length) return null;
 
-  // hits[0].point is interpolated; for Points we prefer nearest vertex:
-  // Many times intersect point is fine. We'll use it.
+  const objs = [];
+  if (staticPointsObj) objs.push(staticPointsObj);
+  if (dynamicPointsObj) objs.push(dynamicPointsObj);
+
+  const hits = raycaster.intersectObjects(objs, false);
+  if (!hits.length) return null;
   return hits[0].point.clone();
 }
 
-renderer.domElement.addEventListener('click', (e) => {
+renderer.domElement.addEventListener('click', (e)=>{
   const p = pickPoint(e);
   if (!p) return;
 
-  if (!A) {
-    A = p; setMarker('A', A);
-  } else if (!B) {
-    B = p; setMarker('B', B);
+  if (!A){
+    A = p;
+    if (markerA) scene.remove(markerA);
+    markerA = setMarker("A", A);
+    toast("Section point A set", `A = (${A.x.toFixed(2)}, ${A.y.toFixed(2)}, ${A.z.toFixed(2)})`);
+  } else if (!B){
+    B = p;
+    if (markerB) scene.remove(markerB);
+    markerB = setMarker("B", B);
     updateLine();
-    computeAndDrawProfile(); // when A and B are set
+    toast("Section point B set", `B = (${B.x.toFixed(2)}, ${B.y.toFixed(2)}, ${B.z.toFixed(2)})`);
+    drawProfile();
+    computeError();
   } else {
-    // third click resets to new A
+    // third click: start over
     A = p; B = null;
-    setMarker('A', A);
-    if (markerB) { scene.remove(markerB); markerB = null; }
-    if (sectionLine) { scene.remove(sectionLine); sectionLine = null; }
-    clearProfile();
+    if (markerA) scene.remove(markerA);
+    if (markerB) scene.remove(markerB);
+    markerA = setMarker("A", A);
+    markerB = null;
+    if (sectionLine) scene.remove(sectionLine);
+    sectionLine = null;
+    clearProfile("Click a second point to complete section (A → B).");
   }
 });
 
-// ---------- Profile computation ----------
-const widthSlider = document.getElementById('width');
-const widthVal = document.getElementById('widthVal');
-widthVal.textContent = (+widthSlider.value).toFixed(2);
-
-widthSlider.addEventListener('input', () => {
-  widthVal.textContent = (+widthSlider.value).toFixed(2);
-  if (A && B) computeAndDrawProfile();
-});
-
-document.getElementById('reset').addEventListener('click', () => {
-  A = null; B = null;
-  if (markerA) { scene.remove(markerA); markerA = null; }
-  if (markerB) { scene.remove(markerB); markerB = null; }
-  if (sectionLine) { scene.remove(sectionLine); sectionLine = null; }
-  clearProfile();
-});
-
-document.getElementById('toggleLine').addEventListener('click', () => {
-  showLine = !showLine;
-  if (sectionLine) sectionLine.visible = showLine;
-});
-
+// ---------- Profile Canvas ----------
 const canvas = document.getElementById('profile');
 const ctx = canvas.getContext('2d');
 
-function clearProfile() {
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  // background
-  ctx.fillStyle = '#111';
+function clearProfile(msg="Load datasets, then click 2 points for section (A → B)."){
+  ctx.fillStyle = '#0f1620';
   ctx.fillRect(0,0,canvas.width,canvas.height);
-  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
   ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Arial';
-  ctx.fillText('Click 2 points to define cross-section line (A → B).', 12, 22);
+  ctx.fillText(msg, 12, 22);
 }
 clearProfile();
 
-function computeProfilePoints(pointsObj, colorRGBA) {
-  const width = parseFloat(widthSlider.value);
-  const posAttr = pointsObj.geometry.getAttribute('position');
-
+function extractSectionPoints(positions, A, B, width){
+  // returns array of {xAlong, yElev}
   const dir = new THREE.Vector3().subVectors(B, A);
-  const length = dir.length();
-  if (length < 1e-6) return { pts: [], length: 0 };
-
+  const L = dir.length();
+  if (L < 1e-9) return { pts: [], L: 0 };
   dir.normalize();
 
-  // For distance-to-line: use perpendicular distance in 3D.
-  // Compute parameter t along AB and distance d to line.
+  const halfW = width/2;
   const pts = [];
   const tmp = new THREE.Vector3();
-  const AP = new THREE.Vector3();
 
-  for (let i = 0; i < posAttr.count; i++) {
-    tmp.set(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+  for (let i=0; i<positions.length; i+=3){
+    tmp.set(positions[i], positions[i+1], positions[i+2]);
 
-    AP.subVectors(tmp, A);
-    const t = AP.dot(dir);         // along distance from A (meters)
-    if (t < 0 || t > length) continue;
+    // t along AB
+    const ap = tmp.clone().sub(A);
+    const t = ap.dot(dir);
+    if (t < 0 || t > L) continue;
 
-    // perpendicular distance to line
-    const closest = new THREE.Vector3().copy(A).addScaledVector(dir, t);
+    // distance to line
+    const closest = A.clone().addScaledVector(dir, t);
     const d = tmp.distanceTo(closest);
-    if (d > width/2) continue;
+    if (d > halfW) continue;
 
-    // Profile coords: x = t (along section), y = elevation (Y)
-    pts.push({ x: t, y: tmp.y, c: colorRGBA });
+    pts.push({ x: t, y: tmp.y });
   }
-
-  return { pts, length };
+  return { pts, L };
 }
 
-function drawAxes(xMin, xMax, yMin, yMax) {
-  // background
-  ctx.fillStyle = '#111';
+function drawAxes(xMin,xMax,yMin,yMax){
+  ctx.fillStyle = '#0f1620';
   ctx.fillRect(0,0,canvas.width,canvas.height);
 
-  // frame
   ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(40, 18, canvas.width-52, canvas.height-48);
+  ctx.strokeRect(44, 18, canvas.width-60, canvas.height-52);
 
   ctx.fillStyle = 'rgba(255,255,255,0.75)';
   ctx.font = '11px system-ui, -apple-system, Segoe UI, Roboto, Arial';
+  ctx.fillText(`X (m): ${xMin.toFixed(2)} — ${xMax.toFixed(2)}`, 44, canvas.height-14);
 
-  ctx.fillText(`X along section (m): ${xMin.toFixed(2)} — ${xMax.toFixed(2)}`, 40, canvas.height-16);
   ctx.save();
-  ctx.translate(12, canvas.height/2);
+  ctx.translate(14, canvas.height/2);
   ctx.rotate(-Math.PI/2);
-  ctx.fillText(`Elevation Y (m): ${yMin.toFixed(2)} — ${yMax.toFixed(2)}`, 0, 0);
+  ctx.fillText(`Y Elev (m): ${yMin.toFixed(2)} — ${yMax.toFixed(2)}`, 0, 0);
   ctx.restore();
 }
 
-function computeAndDrawProfile() {
+function drawProfile(){
   if (!A || !B) return;
+  const w = parseFloat(sectionWidth.value);
 
-  // Compute for both
-  const profStatic  = computeProfilePoints(staticPC,  'rgba(0,160,255,0.70)');
-  const profDynamic = computeProfilePoints(dynamicPC, 'rgba(255,80,80,0.70)');
+  const s = staticData ? extractSectionPoints(staticData.positions, A, B, w) : {pts:[], L:0};
+  const d = dynamicData ? extractSectionPoints(dynamicData.positions, A, B, w) : {pts:[], L:0};
 
-  const ptsAll = profStatic.pts.concat(profDynamic.pts);
-  if (!ptsAll.length) {
-    clearProfile();
-    ctx.fillStyle = 'rgba(255,255,255,0.75)';
-    ctx.fillText('No points inside section width. Increase width or choose different line.', 12, 42);
+  const all = s.pts.concat(d.pts);
+  if (!all.length) {
+    clearProfile("No points inside section width. Increase width or choose another line.");
     return;
   }
 
-  // extents
   const xMin = 0;
-  const xMax = Math.max(profStatic.length, profDynamic.length);
+  const xMax = Math.max(s.L, d.L);
   let yMin = Infinity, yMax = -Infinity;
-  for (const p of ptsAll) { yMin = Math.min(yMin, p.y); yMax = Math.max(yMax, p.y); }
-  // pad
-  const yPad = (yMax - yMin) * 0.05 || 0.2;
-  yMin -= yPad; yMax += yPad;
+  for (const p of all){ yMin = Math.min(yMin, p.y); yMax = Math.max(yMax, p.y); }
+  const pad = (yMax-yMin)*0.05 || 0.2;
+  yMin -= pad; yMax += pad;
 
-  drawAxes(xMin, xMax, yMin, yMax);
+  drawAxes(xMin,xMax,yMin,yMax);
 
-  const plotX0 = 40, plotY0 = 18;
-  const plotW = canvas.width - 52;
-  const plotH = canvas.height - 48;
+  const x0=44, y0=18, W=canvas.width-60, H=canvas.height-52;
+  const sx = (x)=> x0 + ((x-xMin)/(xMax-xMin))*W;
+  const sy = (y)=> y0 + (1-((y-yMin)/(yMax-yMin)))*H;
 
-  const sx = (x) => plotX0 + ( (x - xMin) / (xMax - xMin) ) * plotW;
-  const sy = (y) => plotY0 + (1 - ( (y - yMin) / (yMax - yMin) )) * plotH;
-
-  // draw points (static first, then dynamic)
-  function drawPts(arr) {
-    for (let i = 0; i < arr.length; i++) {
-      const p = arr[i];
-      const px = sx(p.x);
-      const py = sy(p.y);
-      ctx.fillStyle = p.c;
-      ctx.fillRect(px, py, 1.2, 1.2); // pixel-style for speed
+  // draw points
+  function drawPts(arr, rgba){
+    ctx.fillStyle = rgba;
+    for (let i=0;i<arr.length;i++){
+      const px = sx(arr[i].x);
+      const py = sy(arr[i].y);
+      ctx.fillRect(px, py, 1.2, 1.2);
     }
   }
-  drawPts(profStatic.pts);
-  drawPts(profDynamic.pts);
+  drawPts(s.pts, 'rgba(0,160,255,0.70)');
+  drawPts(d.pts, 'rgba(255,80,80,0.70)');
 
-  // headline
   ctx.fillStyle = 'rgba(255,255,255,0.85)';
   ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Arial';
-  const w = parseFloat(widthSlider.value);
-  ctx.fillText(`Section width = ${w.toFixed(2)} m | Static pts = ${profStatic.pts.length} | Dynamic pts = ${profDynamic.pts.length}`, 40, 12);
+  ctx.fillText(`Width=${w.toFixed(2)}m | Static=${s.pts.length} | Dynamic=${d.pts.length}`, 44, 12);
 }
 
-// render loop
-function animate() {
+// ---------- Error estimation (Dynamic -> Static, approximate nearest neighbor) ----------
+function computeError(){
+  if (!staticData || !dynamicData){
+    errOutEl.textContent = "Load both datasets first.";
+    return;
+  }
+
+  statusEl.textContent = "Computing error (approx NN)…";
+
+  const sPos = staticData.positions;
+  const dPos = dynamicData.positions;
+
+  // Build a simple grid hash for STATIC points to accelerate nearest neighbor search
+  // Cell size uses voxel size (reasonable for approximate NN)
+  const cell = Math.max(parseFloat(voxel.value), 0.05);
+  const grid = new Map();
+
+  function key(ix,iy,iz){ return `${ix},${iy},${iz}`; }
+
+  for (let i=0;i<sPos.length;i+=3){
+    const x=sPos[i], y=sPos[i+1], z=sPos[i+2];
+    const ix=Math.floor(x/cell), iy=Math.floor(y/cell), iz=Math.floor(z/cell);
+    const k=key(ix,iy,iz);
+    if (!grid.has(k)) grid.set(k, []);
+    grid.get(k).push(i); // store index into sPos
+  }
+
+  // search neighborhood cells
+  function nearestDistance(x,y,z){
+    const ix=Math.floor(x/cell), iy=Math.floor(y/cell), iz=Math.floor(z/cell);
+    let best = Infinity;
+
+    for (let dx=-1; dx<=1; dx++){
+      for (let dy=-1; dy<=1; dy++){
+        for (let dz=-1; dz<=1; dz++){
+          const k = key(ix+dx, iy+dy, iz+dz);
+          const list = grid.get(k);
+          if (!list) continue;
+          for (let idx of list){
+            const sx=sPos[idx], sy=sPos[idx+1], sz=sPos[idx+2];
+            const ddx=x-sx, ddy=y-sy, ddz=z-sz;
+            const dist = Math.sqrt(ddx*ddx + ddy*ddy + ddz*ddz);
+            if (dist < best) best = dist;
+          }
+        }
+      }
+    }
+    return best;
+  }
+
+  // compute distances for dynamic points
+  const distances = [];
+  for (let i=0;i<dPos.length;i+=3){
+    const x=dPos[i], y=dPos[i+1], z=dPos[i+2];
+    const nd = nearestDistance(x,y,z);
+    if (Number.isFinite(nd)) distances.push(nd);
+  }
+
+  if (!distances.length){
+    errOutEl.textContent = "No distances computed. (Check datasets overlap / scale / coordinate system.)";
+    statusEl.textContent = "Error not computed.";
+    return;
+  }
+
+  // stats
+  let sum=0, sum2=0, max=0;
+  for (const v of distances){ sum += v; sum2 += v*v; max = Math.max(max, v); }
+  const mean = sum / distances.length;
+  const rmse = Math.sqrt(sum2 / distances.length);
+
+  distances.sort((a,b)=>a-b);
+  const p95 = distances[Math.floor(0.95*(distances.length-1))];
+  const p50 = distances[Math.floor(0.50*(distances.length-1))];
+
+  errOutEl.innerHTML = `
+    Count: <code>${distances.length}</code><br/>
+    Mean: <code>${mean.toFixed(4)} m</code><br/>
+    RMSE: <code>${rmse.toFixed(4)} m</code><br/>
+    Median (P50): <code>${p50.toFixed(4)} m</code><br/>
+    P95: <code>${p95.toFixed(4)} m</code><br/>
+    Max: <code>${max.toFixed(4)} m</code><br/>
+    <span style="color:rgba(255,255,255,0.75)">Note: NN is approximate (grid-hash) and depends on voxel/cell size.</span>
+  `;
+  statusEl.textContent = "Ready.";
+}
+
+// ---------- Buttons ----------
+document.getElementById('resetSection').addEventListener('click', ()=>{
+  A=null; B=null;
+  if (markerA) scene.remove(markerA);
+  if (markerB) scene.remove(markerB);
+  markerA=null; markerB=null;
+  if (sectionLine) scene.remove(sectionLine);
+  sectionLine=null;
+  clearProfile();
+});
+
+document.getElementById('recalcError').addEventListener('click', ()=>{
+  computeError();
+});
+
+document.getElementById('clearAll').addEventListener('click', ()=>{
+  staticData=null; dynamicData=null;
+  if (staticPointsObj) scene.remove(staticPointsObj);
+  if (dynamicPointsObj) scene.remove(dynamicPointsObj);
+  staticPointsObj=null; dynamicPointsObj=null;
+
+  A=null; B=null;
+  if (markerA) scene.remove(markerA);
+  if (markerB) scene.remove(markerB);
+  markerA=null; markerB=null;
+  if (sectionLine) scene.remove(sectionLine);
+  sectionLine=null;
+
+  errOutEl.textContent = "Not computed.";
+  statusEl.textContent = "Waiting for uploads…";
+  clearProfile();
+  toast("Cleared", "All data removed.");
+});
+
+// ---------- Render loop ----------
+function animate(){
   requestAnimationFrame(animate);
   controls.update();
   renderer.render(scene, camera);
 }
 animate();
-
-addEventListener('resize', () => {
-  camera.aspect = innerWidth/innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-});
 </script>
 </body>
 </html>
