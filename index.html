@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>A-Frame GLTF Drop Viewer</title>
+  <title>A-Frame GLTF/LAS Drop Viewer (Auto-Ground)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
 
@@ -14,21 +14,37 @@
       background: rgba(0,0,0,0.55); color: #fff;
       border: 1px dashed rgba(255,255,255,0.25);
       backdrop-filter: blur(8px);
-      max-width: 520px;
+      max-width: 560px;
       line-height: 1.35;
     }
     .drop strong { display:block; margin-bottom:6px; }
     .drop .small { font-size: 13px; opacity: 0.85; }
     .drop.dragover { border-style: solid; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
   </style>
+
+  <!-- Loaders.gl for LAS parsing (ESM) -->
+  <script type="module">
+    // Use an ESM CDN that reliably exports named bindings.
+    import { parse } from 'https://esm.sh/@loaders.gl/core@4.3.4';
+    import { LASLoader } from 'https://esm.sh/@loaders.gl/las@4.3.4';
+
+    // Expose a single helper to the non-module script
+    window.__parseLAS = async function(file) {
+      const arrayBuffer = await file.arrayBuffer();
+      // parse(data, loader) is the canonical pattern in loaders.gl
+      // returns a point cloud object with attributes.POSITION, etc.
+      return await parse(arrayBuffer, LASLoader);
+    };
+  </script>
 </head>
 
 <body>
   <div id="drop" class="drop">
-    <strong>Drop .glb / .gltf here</strong>
+    <strong>Drop files here: <span class="mono">.glb / .gltf / .las</span></strong>
     <div class="small">
-      Recommended: <b>.glb</b> (single file).<br/>
-      If using .gltf with external textures, ensure assets are accessible.
+      Recommended: <b>.glb</b> for models (single file).<br/>
+      LAS will be shown as point cloud. All data will be automatically placed above the ground (Y=0).
     </div>
   </div>
 
@@ -39,9 +55,10 @@
     <a-entity light="type: directional; intensity: 1.0" position="2 4 2"></a-entity>
 
     <!-- Ground at Y=0 -->
-    <a-plane rotation="-90 0 0" width="50" height="50" color="#111827"></a-plane>
+    <a-plane rotation="-90 0 0" width="80" height="80" color="#111827"
+             material="roughness:1; metalness:0"></a-plane>
 
-    <!-- Model entity -->
+    <!-- Model entity (GLB/GLTF) -->
     <a-entity id="model" position="0 0 -3"></a-entity>
 
     <a-entity position="0 1.6 0">
@@ -51,58 +68,143 @@
 
   <script>
     const drop = document.getElementById('drop');
-    const model = document.getElementById('model');
+    const sceneEl = document.querySelector('a-scene');
+    const modelEl = document.getElementById('model');
 
-    function setModelFromFile(file){
-      const url = URL.createObjectURL(file);
-
-      // Reset transforms via object3D (more reliable than setAttribute timing)
-      model.object3D.position.set(0, 0, -3);
-      model.object3D.rotation.set(0, 0, 0);
-      model.object3D.scale.set(1, 1, 1);
-
-      model.setAttribute('gltf-model', url);
-    }
+    // Track the currently displayed LAS point cloud (THREE.Points)
+    let currentLasPoints = null;
 
     function isGltfLike(file){
       const name = (file.name || '').toLowerCase();
       return name.endsWith('.glb') || name.endsWith('.gltf');
     }
+    function isLas(file){
+      const name = (file.name || '').toLowerCase();
+      return name.endsWith('.las');
+    }
 
+    // --- Common: auto-ground any THREE.Object3D so its minY becomes 0
+    function groundObject3D(obj3d){
+      obj3d.updateWorldMatrix(true, true);
+      const box = new THREE.Box3().setFromObject(obj3d);
+      const minY = box.min.y;
+      if (Number.isFinite(minY)) {
+        obj3d.position.y -= minY;
+      }
+    }
+
+    // --- GLB/GLTF loader (A-Frame gltf-model)
+    function setModelFromFile(file){
+      const url = URL.createObjectURL(file);
+
+      // Reset transforms reliably via object3D
+      modelEl.object3D.position.set(0, 0, -3);
+      modelEl.object3D.rotation.set(0, 0, 0);
+      modelEl.object3D.scale.set(1, 1, 1);
+
+      modelEl.setAttribute('gltf-model', url);
+    }
+
+    // Auto-ground GLTF after it is loaded
+    modelEl.addEventListener('model-loaded', () => {
+      const mesh = modelEl.getObject3D('mesh');
+      if (!mesh) return;
+
+      mesh.updateWorldMatrix(true, true);
+      const box = new THREE.Box3().setFromObject(mesh);
+      const minY = box.min.y;
+
+      if (Number.isFinite(minY)) {
+        modelEl.object3D.position.y -= minY; // shift entity so bottom touches Y=0
+      }
+
+      console.log('GLTF grounded. minY:', minY);
+    });
+    modelEl.addEventListener('model-error', (e) => console.error('GLTF model error', e.detail));
+
+    // --- LAS visualizer: parse LAS -> THREE.Points -> add to scene
+    async function setLasFromFile(file){
+      if (!window.__parseLAS) {
+        alert('LAS parser not ready. Please refresh and try again.');
+        return;
+      }
+
+      // Remove previous LAS points if any
+      if (currentLasPoints) {
+        sceneEl.object3D.remove(currentLasPoints);
+        if (currentLasPoints.geometry) currentLasPoints.geometry.dispose?.();
+        if (currentLasPoints.material) currentLasPoints.material.dispose?.();
+        currentLasPoints = null;
+      }
+
+      console.log('Parsing LAS:', file.name);
+      const las = await window.__parseLAS(file);
+
+      // Expect positions in las.attributes.POSITION.value
+      const positions = las?.attributes?.POSITION?.value;
+      if (!positions || positions.length < 3) {
+        alert('LAS parsed but no POSITION attribute found.');
+        return;
+      }
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+      // Optional: try to read colors if available
+      // Depending on LAS, attribute names can vary; this is best-effort.
+      let material;
+      const colors =
+        las?.attributes?.COLOR_0?.value ||
+        las?.attributes?.COLOR?.value ||
+        las?.attributes?.rgb?.value;
+
+      if (colors && colors.length === positions.length) {
+        // Normalize 0..255 -> 0..1
+        const c = new Float32Array(colors.length);
+        for (let i = 0; i < colors.length; i++) c[i] = colors[i] / 255.0;
+        geometry.setAttribute('color', new THREE.BufferAttribute(c, 3));
+        material = new THREE.PointsMaterial({ size: 0.03, vertexColors: true });
+      } else {
+        material = new THREE.PointsMaterial({ size: 0.03 });
+      }
+
+      const points = new THREE.Points(geometry, material);
+      points.position.set(0, 0, -3);
+
+      // Auto-ground LAS point cloud so it sits on Y=0
+      groundObject3D(points);
+
+      sceneEl.object3D.add(points);
+      currentLasPoints = points;
+
+      console.log('LAS loaded + grounded:', file.name);
+    }
+
+    // --- Drag & drop
     window.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('dragover'); });
     window.addEventListener('dragleave', () => drop.classList.remove('dragover'));
-    window.addEventListener('drop', (e) => {
+    window.addEventListener('drop', async (e) => {
       e.preventDefault();
       drop.classList.remove('dragover');
 
       const file = e.dataTransfer?.files?.[0];
       if (!file) return;
 
-      if (!isGltfLike(file)){
-        alert('Please drop a .glb or .gltf file.');
-        return;
+      try {
+        if (isGltfLike(file)) {
+          setModelFromFile(file);
+          return;
+        }
+        if (isLas(file)) {
+          await setLasFromFile(file);
+          return;
+        }
+        alert('Unsupported file. Use .glb, .gltf, or .las');
+      } catch (err) {
+        console.error(err);
+        alert('Failed to load file. See console for details.');
       }
-      setModelFromFile(file);
     });
-
-    // Auto-ground on load
-    model.addEventListener('model-loaded', () => {
-      const mesh = model.getObject3D('mesh');
-      if (!mesh) return;
-
-      mesh.updateWorldMatrix(true, true);
-
-      const box = new THREE.Box3().setFromObject(mesh);
-      const minY = box.min.y;
-
-      if (Number.isFinite(minY)) {
-        model.object3D.position.y -= minY;
-      }
-
-      console.log('Model loaded + grounded. minY:', minY);
-    });
-
-    model.addEventListener('model-error', (e) => console.error('Model error', e.detail));
   </script>
 </body>
 </html>
