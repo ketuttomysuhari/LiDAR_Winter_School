@@ -5,6 +5,16 @@
   <title>LAS 1.4 Local Viewer + Profile Tool (No Potree)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
+  <!-- FIX: Importmap so OrbitControls (and other addons) can resolve "three" -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.174.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.174.0/examples/jsm/"
+    }
+  }
+  </script>
+
   <style>
     html, body { margin:0; height:100%; overflow:hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#0b1220; color:#e5e7eb;}
     #ui {
@@ -49,7 +59,7 @@
       <label style="margin-top:10px;">Load DYNAMIC (.las)</label>
       <input type="file" id="fileDynamic" accept=".las" />
 
-      <div id="status">Ready. Load LAS files (run via http server to avoid browser file quirks).</div>
+      <div id="status">Ready. Run via http server (e.g. <code>python -m http.server 8000</code>).</div>
     </div>
 
     <div class="card">
@@ -88,7 +98,7 @@
 
       <label>Classification filter (comma-separated). Example: 2,5,6</label>
       <input type="text" id="classList" placeholder="empty = no filter" />
-      <div class="hint">Jika Anda ubah sampling / filter, silakan pilih file lagi (reload layer) agar parsing ulang.</div>
+      <div class="hint">Jika Anda ubah sampling/filter, reload layer (pilih file lagi) untuk parsing ulang.</div>
     </div>
 
     <div class="card">
@@ -131,8 +141,8 @@
       <canvas id="plot"></canvas>
 
       <div class="hint">
-        Cara pakai: klik “Start pick 2 points”, lalu klik 2 titik pada layer yang aktif. Sistem akan membentuk garis,
-        mengambil titik dalam koridor width, dan membuat plot Distance vs (Z/Intensity).
+        Klik “Start pick 2 points”, lalu klik 2 titik pada layer aktif.
+        Sistem ambil titik dalam koridor width, dan plot Distance vs (Z/Intensity).
       </div>
     </div>
 
@@ -142,13 +152,12 @@
     </div>
   </div>
 
-  <!-- Main script as module; Three.js loaded via URL (no "three" specifier) -->
   <script type="module">
-    import * as THREE from "https://unpkg.com/three@0.174.0/build/three.module.js";
-    import { OrbitControls } from "https://unpkg.com/three@0.174.0/examples/jsm/controls/OrbitControls.js";
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
     // ----------------------------
-    // LAS reader (minimal; good for 1.2–1.4)
+    // LAS reader (minimal; works for LAS 1.2–1.4 common point formats)
     // ----------------------------
     function readString(view, offset, length){
       let s = "";
@@ -261,9 +270,6 @@
         if(Z < zMin || Z > zMax) continue;
 
         const intensity = view.getUint16(off + 12, true);
-
-        // classification byte:
-        // formats 0–5: offset 15; formats 6–10: offset 15 (classification)
         const cls = view.getUint8(off + 15);
 
         if(classFilter && !classFilter.has(cls)) continue;
@@ -433,7 +439,6 @@
         return;
       }
 
-      // samples: {d, z, i}
       let minD = Infinity, maxD = -Infinity;
       let minY = Infinity, maxY = -Infinity;
 
@@ -449,7 +454,6 @@
       const dx = Math.max(1e-9, maxD - minD);
       const dy = Math.max(1e-9, maxY - minY);
 
-      // axes
       ctx.strokeStyle = "rgba(255,255,255,0.35)";
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -458,7 +462,6 @@
       ctx.lineTo(w-pad, pad);
       ctx.stroke();
 
-      // points
       ctx.fillStyle = "rgba(255,255,255,0.8)";
       for(const s of samples){
         const x = pad + ((s.d - minD)/dx) * (w - 2*pad);
@@ -467,7 +470,6 @@
         ctx.fillRect(x, y, 1.5, 1.5);
       }
 
-      // labels
       ctx.fillStyle = "rgba(255,255,255,0.9)";
       ctx.font = "12px system-ui, Arial";
       ctx.fillText(`Profile: Distance vs ${yMode === "intensity" ? "Intensity" : "Elevation"}`, 10, 16);
@@ -476,8 +478,6 @@
       ctx.fillText(`${yMode === "intensity" ? "I" : "Z"}: ${minY.toFixed(2)}–${maxY.toFixed(2)}`, w-180, 16);
     }
 
-    // Distance from point P to segment AB in 3D:
-    // returns {t, dist}, where t in [0,1] is projection parameter, dist is perpendicular distance
     function pointToSegment3D(P, A, B){
       const AB = new THREE.Vector3().subVectors(B, A);
       const AP = new THREE.Vector3().subVectors(P, A);
@@ -531,11 +531,9 @@
     let profileLine = null;
 
     const raycaster = new THREE.Raycaster();
-    raycaster.params.Points.threshold = 0.5; // this is in world units; we will update with point size below
+    raycaster.params.Points.threshold = 0.5;
 
-    function activeKey(){
-      return document.getElementById("activeLayer").value;
-    }
+    function activeKey(){ return document.getElementById("activeLayer").value; }
     function layerVisible(key){
       return document.getElementById(key === "static" ? "chkStatic" : "chkDynamic").checked;
     }
@@ -615,7 +613,6 @@
       scene.add(pts);
 
       setVisibility();
-
       fitView();
       updateMeta();
       updateHistogram(key);
@@ -633,7 +630,6 @@
       layer.points.material.size = Number(document.getElementById("ptSize").value);
       layer.points.material.opacity = Number(document.getElementById("opacity").value);
 
-      // raycaster threshold should roughly scale with point size
       raycaster.params.Points.threshold = Math.max(0.05, layer.points.material.size * 0.6);
 
       const mode = document.getElementById("colorMode").value;
@@ -651,7 +647,6 @@
     function updateHistogram(key){
       const layer = layers[key];
       if(!layer.data) return;
-
       const minI = Number(document.getElementById("iMin").value);
       const maxI = Number(document.getElementById("iMax").value);
       const hist = computeHistogram(layer.data.intensities, minI, maxI, 64);
@@ -725,7 +720,7 @@
       scene.add(profileLine);
     }
 
-    function computeProfileSamples(key, A, B, width, yMode){
+    function computeProfileSamples(key, A, B, width){
       const layer = layers[key];
       if(!layer.data) return [];
 
@@ -735,32 +730,24 @@
       const half = width / 2;
       const samples = [];
 
-      // For speed, we can subsample further if needed (optional)
       const n = layer.data.count;
 
-      // Precompute segment length
       const AB = new THREE.Vector3().subVectors(B, A);
       const segLen = AB.length();
       if(segLen <= 1e-9) return [];
 
-      // Iterate all sampled points and select within corridor
-      // P in corridor if dist(P, segment AB) <= half
       const P = new THREE.Vector3();
       for(let i=0;i<n;i++){
         P.set(pos[i*3+0], pos[i*3+1], pos[i*3+2]);
         const { t, dist } = pointToSegment3D(P, A, B);
         if(dist <= half){
-          const d = t * segLen; // distance along segment
-          const z = P.z;
-          const I = inten[i];
-          samples.push({ d, z, i: I });
+          const d = t * segLen;
+          samples.push({ d, z: P.z, i: inten[i] });
         }
       }
 
-      // Sort by distance for nicer plot
       samples.sort((a,b)=>a.d-b.d);
 
-      // Light thinning for plot (optional): keep at most ~30k points for canvas
       const maxPlot = 30000;
       if(samples.length > maxPlot){
         const step = Math.ceil(samples.length / maxPlot);
@@ -768,7 +755,6 @@
         for(let i=0;i<samples.length;i+=step) thinned.push(samples[i]);
         return thinned;
       }
-
       return samples;
     }
 
@@ -779,10 +765,10 @@
       const width = Number(document.getElementById("profileWidth").value);
       const yMode = document.getElementById("profileY").value;
 
-      const samples = computeProfileSamples(key, pickA, pickB, width, yMode);
+      const samples = computeProfileSamples(key, pickA, pickB, width);
       drawProfilePlot(plotCanvas, samples, yMode);
 
-      statusEl.textContent = `Profile computed for ${key.toUpperCase()}: ${samples.length.toLocaleString()} plotted points (within width ${width} m).`;
+      statusEl.textContent = `Profile computed for ${key.toUpperCase()}: ${samples.length.toLocaleString()} plotted points (width ${width} m).`;
     }
 
     function pickPointFromActiveLayer(clientX, clientY){
@@ -797,20 +783,16 @@
       raycaster.setFromCamera({x,y}, camera);
       const intersects = raycaster.intersectObject(layer.points, false);
       if(!intersects.length) return null;
-
-      // intersect.point is in world coords
       return intersects[0].point.clone();
     }
 
     renderer.domElement.addEventListener("pointerdown", (e) => {
       if(!pickingProfile) return;
-
-      // prevent orbit controls drag from interfering
       e.preventDefault();
 
       const p = pickPointFromActiveLayer(e.clientX, e.clientY);
       if(!p){
-        statusEl.textContent = "No point hit. Zoom in or increase point size / threshold.";
+        statusEl.textContent = "No point hit. Zoom in or increase point size.";
         return;
       }
 
@@ -856,7 +838,6 @@
         const k = activeKey();
         applyStyle(k);
         updateHistogram(k);
-        // if profile already defined, refresh plot to reflect y-mode changes if needed
         if(pickA && pickB) runProfile();
       });
     });
@@ -900,9 +881,6 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    // ----------------------------
-    // Animate
-    // ----------------------------
     function animate(){
       requestAnimationFrame(animate);
       controls.update();
