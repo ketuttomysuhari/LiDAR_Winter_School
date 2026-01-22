@@ -2,15 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Local LAS 1.4 Viewer (Static vs Dynamic) - Pure HTML+JS</title>
+  <title>LAS 1.4 Local Viewer + Profile Tool (No Potree)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+
   <style>
     html, body { margin:0; height:100%; overflow:hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#0b1220; color:#e5e7eb;}
     #ui {
-      position:absolute; left:12px; top:12px; width:360px; bottom:12px;
+      position:absolute; left:12px; top:12px; width:380px; bottom:12px;
       overflow:auto; padding:12px; border-radius:14px;
       background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.10);
       backdrop-filter: blur(8px);
+      box-sizing:border-box;
     }
     h1 { font-size:14px; margin:0 0 10px; }
     .card { background:rgba(0,0,0,0.25); border:1px solid rgba(255,255,255,0.10); border-radius:12px; padding:10px; margin:10px 0; }
@@ -24,20 +26,129 @@
       background:rgba(255,255,255,0.08); color:#e5e7eb; cursor:pointer;
     }
     button:hover { background:rgba(255,255,255,0.12); }
+    button:disabled { opacity:0.55; cursor:not-allowed; }
     pre { white-space: pre-wrap; word-break: break-word; font-size:12px; margin:8px 0 0; }
     #canvasWrap { position:absolute; left:0; top:0; right:0; bottom:0; }
-    #hist { width:100%; height:120px; border-radius:10px; border:1px solid rgba(255,255,255,0.10); background:rgba(0,0,0,0.25); }
+    canvas#plot { width:100%; height:180px; border-radius:10px; border:1px solid rgba(255,255,255,0.10); background:rgba(0,0,0,0.25); }
+    canvas#hist { width:100%; height:120px; border-radius:10px; border:1px solid rgba(255,255,255,0.10); background:rgba(0,0,0,0.25); }
     #status { font-size:12px; color:#9ca3af; margin-top:6px; line-height:1.35; }
+    .hint { font-size:12px; color:#9ca3af; line-height:1.35; margin-top:6px; }
   </style>
+</head>
 
-  <!-- Three.js via UNPKG (no bare imports) -->
+<body>
+  <div id="canvasWrap"></div>
+
+  <div id="ui">
+    <h1>LAS 1.4 Local Viewer + Profile Tool</h1>
+
+    <div class="card">
+      <label>Load STATIC (.las)</label>
+      <input type="file" id="fileStatic" accept=".las" />
+
+      <label style="margin-top:10px;">Load DYNAMIC (.las)</label>
+      <input type="file" id="fileDynamic" accept=".las" />
+
+      <div id="status">Ready. Load LAS files (run via http server to avoid browser file quirks).</div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <label><input type="checkbox" id="chkStatic" checked /> Show STATIC</label>
+        <label><input type="checkbox" id="chkDynamic" checked /> Show DYNAMIC</label>
+      </div>
+
+      <label>Active layer (controls apply to this)</label>
+      <select id="activeLayer">
+        <option value="static">STATIC</option>
+        <option value="dynamic">DYNAMIC</option>
+      </select>
+
+      <label>Point size</label>
+      <input type="range" id="ptSize" min="0.5" max="10" step="0.1" value="2" />
+
+      <label>Opacity</label>
+      <input type="range" id="opacity" min="0.05" max="1" step="0.01" value="1" />
+
+      <button id="btnFit">Fit View</button>
+    </div>
+
+    <div class="card">
+      <label>Sampling: max points loaded (per layer)</label>
+      <input type="number" id="maxPoints" value="1500000" min="10000" step="10000" />
+
+      <label>Sampling stride (1 = every point, 10 = take 1 of 10)</label>
+      <input type="number" id="stride" value="5" min="1" step="1" />
+
+      <label>Z filter (optional) - Min / Max</label>
+      <div class="row">
+        <input type="number" id="zMin" value="-1e20" />
+        <input type="number" id="zMax" value="1e20" />
+      </div>
+
+      <label>Classification filter (comma-separated). Example: 2,5,6</label>
+      <input type="text" id="classList" placeholder="empty = no filter" />
+      <div class="hint">Jika Anda ubah sampling / filter, silakan pilih file lagi (reload layer) agar parsing ulang.</div>
+    </div>
+
+    <div class="card">
+      <label>Color mode</label>
+      <select id="colorMode">
+        <option value="rgb">RGB (if exists)</option>
+        <option value="intensity">Intensity</option>
+        <option value="classification">Classification</option>
+        <option value="height">Height (Z)</option>
+      </select>
+
+      <label>Intensity range</label>
+      <div class="row">
+        <input type="number" id="iMin" value="0" />
+        <input type="number" id="iMax" value="65535" />
+      </div>
+
+      <label>Histogram (Intensity)</label>
+      <canvas id="hist"></canvas>
+      <button id="btnHist">Update Histogram</button>
+    </div>
+
+    <div class="card">
+      <label><strong>Profile Tool (2 clicks)</strong></label>
+      <div class="row">
+        <button id="btnProfileStart">Start pick 2 points</button>
+        <button id="btnProfileClear" disabled>Clear</button>
+      </div>
+
+      <label>Profile width (meters)</label>
+      <input type="number" id="profileWidth" value="0.30" step="0.05" min="0.01" />
+
+      <label>Plot Y</label>
+      <select id="profileY">
+        <option value="elevation">Elevation (Z)</option>
+        <option value="intensity">Intensity</option>
+      </select>
+
+      <label>Plot</label>
+      <canvas id="plot"></canvas>
+
+      <div class="hint">
+        Cara pakai: klik “Start pick 2 points”, lalu klik 2 titik pada layer yang aktif. Sistem akan membentuk garis,
+        mengambil titik dalam koridor width, dan membuat plot Distance vs (Z/Intensity).
+      </div>
+    </div>
+
+    <div class="card">
+      <label>Metadata</label>
+      <pre id="meta"></pre>
+    </div>
+  </div>
+
+  <!-- Main script as module; Three.js loaded via URL (no "three" specifier) -->
   <script type="module">
     import * as THREE from "https://unpkg.com/three@0.174.0/build/three.module.js";
     import { OrbitControls } from "https://unpkg.com/three@0.174.0/examples/jsm/controls/OrbitControls.js";
 
     // ----------------------------
-    // Minimal LAS reader (LAS 1.2–1.4)
-    // Supports point formats 0–10 for XYZ/intensity/classification, RGB when present.
+    // LAS reader (minimal; good for 1.2–1.4)
     // ----------------------------
     function readString(view, offset, length){
       let s = "";
@@ -48,40 +159,30 @@
       }
       return s.trim();
     }
-
     function readUInt64LE(view, offset){
-      // JS number precise up to 2^53-1; LAS files typically safe for offsets
       const lo = view.getUint32(offset, true);
       const hi = view.getUint32(offset+4, true);
       return hi * 4294967296 + lo;
     }
-
     function parseLASHeader(buffer){
       const view = new DataView(buffer);
-
-      const fileSig = readString(view, 0, 4);
-      if(fileSig !== "LASF") throw new Error("Not a LAS file (missing LASF signature).");
+      const sig = readString(view, 0, 4);
+      if(sig !== "LASF") throw new Error("Not a LAS file (missing LASF signature).");
 
       const versionMajor = view.getUint8(24);
       const versionMinor = view.getUint8(25);
-
       const systemId = readString(view, 26, 32);
       const generatingSoftware = readString(view, 58, 32);
 
       const headerSize = view.getUint16(94, true);
-
-      // LAS 1.4: offset_to_point_data at 96 (uint32), num_vlrs at 100 (uint32)
       const offsetToPointData = view.getUint32(96, true);
       const numVLRs = view.getUint32(100, true);
 
-      // Point format + record length
       const pointFormat = view.getUint8(104);
       const pointRecordLength = view.getUint16(105, true);
 
-      // point count (LAS 1.4 has legacy + EVLR), but we read legacy at 107 (uint32)
       const legacyPointCount = view.getUint32(107, true);
 
-      // scales & offsets
       const xScale = view.getFloat64(131, true);
       const yScale = view.getFloat64(139, true);
       const zScale = view.getFloat64(147, true);
@@ -90,7 +191,6 @@
       const yOffset = view.getFloat64(163, true);
       const zOffset = view.getFloat64(171, true);
 
-      // bounds
       const maxX = view.getFloat64(179, true);
       const minX = view.getFloat64(187, true);
       const maxY = view.getFloat64(195, true);
@@ -98,7 +198,6 @@
       const maxZ = view.getFloat64(211, true);
       const minZ = view.getFloat64(219, true);
 
-      // LAS 1.4 extended point count at offset 247 (uint64) if headerSize >= 375
       let pointCount = legacyPointCount;
       if(headerSize >= 375){
         const extPointCount = readUInt64LE(view, 247);
@@ -106,7 +205,7 @@
       }
 
       return {
-        fileSig, versionMajor, versionMinor,
+        versionMajor, versionMinor,
         systemId, generatingSoftware,
         headerSize, offsetToPointData, numVLRs,
         pointFormat, pointRecordLength,
@@ -116,32 +215,23 @@
         bounds: {minX, maxX, minY, maxY, minZ, maxZ}
       };
     }
-
     function hasRGB(pointFormat){
-      // RGB is in formats 2,3,5,7,8,10 (standard LAS)
       return [2,3,5,7,8,10].includes(pointFormat);
-    }
-
-    function pointHasGPS(pointFormat){
-      // GPS time common in 1,3,4,5,6,7,8,9,10
-      return [1,3,4,5,6,7,8,9,10].includes(pointFormat);
     }
 
     function parsePoints(buffer, header, opts){
       const view = new DataView(buffer);
       const {
-        maxPoints = 2_000_000,
+        maxPoints = 1_500_000,
         stride = 1,
         zMin = -Infinity, zMax = Infinity,
-        useROI = false,
-        roi = null // {minX,maxX,minY,maxY,minZ,maxZ} in REAL coords
+        classFilter = null // Set<int>
       } = opts;
 
       const n = Number(header.pointCount);
       const recLen = header.pointRecordLength;
       const base = header.offsetToPointData;
 
-      // Sampling to cap memory
       const step = Math.max(1, stride);
       const cap = Math.min(maxPoints, Math.ceil(n / step));
 
@@ -152,16 +242,14 @@
 
       const rgb = hasRGB(header.pointFormat);
 
-      let count = 0;
-
-      // Precompute scales/offsets
       const sx = header.scale.xScale, sy = header.scale.yScale, sz = header.scale.zScale;
       const ox = header.offset.xOffset, oy = header.offset.yOffset, oz = header.offset.zOffset;
+
+      let count = 0;
 
       for(let i=0; i<n; i+=step){
         const off = base + i * recLen;
 
-        // LAS point record begins with int32 X/Y/Z at 0/4/8
         const Xi = view.getInt32(off + 0, true);
         const Yi = view.getInt32(off + 4, true);
         const Zi = view.getInt32(off + 8, true);
@@ -172,28 +260,16 @@
 
         if(Z < zMin || Z > zMax) continue;
 
-        if(useROI && roi){
-          if(X < roi.minX || X > roi.maxX || Y < roi.minY || Y > roi.maxY || Z < roi.minZ || Z > roi.maxZ) continue;
-        }
-
-        // intensity: uint16 at offset 12 for all common formats
         const intensity = view.getUint16(off + 12, true);
 
-        // classification:
-        // For point formats 0–5: classification byte at offset 15
-        // For point formats 6–10: classification at offset 16 (after flags byte at 14, classification at 15? Actually 6–10: 14=flags, 15=classification, 16=user data, 17=scan angle)
-        // We handle robustly by reading both candidates and picking non-zero if possible.
-        let cls = 0;
-        if(header.pointFormat <= 5){
-          cls = view.getUint8(off + 15);
-        }else{
-          cls = view.getUint8(off + 15);
-        }
+        // classification byte:
+        // formats 0–5: offset 15; formats 6–10: offset 15 (classification)
+        const cls = view.getUint8(off + 15);
 
-        // RGB offsets (standard): last 6 bytes of record for RGB (uint16 each)
+        if(classFilter && !classFilter.has(cls)) continue;
+
         let r=180, g=180, b=180;
         if(rgb){
-          // Many files store 16-bit RGB; map to 8-bit
           const rgbOff = off + recLen - 6;
           const R16 = view.getUint16(rgbOff + 0, true);
           const G16 = view.getUint16(rgbOff + 2, true);
@@ -226,49 +302,12 @@
       };
     }
 
-    function computeHistogram(values, minV, maxV, bins=64){
-      const h = new Array(bins).fill(0);
-      const range = maxV - minV;
-      if(range <= 0) return h;
-      for(let i=0;i<values.length;i++){
-        const v = values[i];
-        if(v < minV || v > maxV) continue;
-        const t = (v - minV)/range;
-        const b = Math.max(0, Math.min(bins-1, Math.floor(t * bins)));
-        h[b]++;
-      }
-      return h;
-    }
-
-    function drawHistogram(canvas, hist){
-      const ctx = canvas.getContext("2d");
-      const w = canvas.width, h = canvas.height;
-      ctx.clearRect(0,0,w,h);
-      ctx.fillStyle = "rgba(0,0,0,0.25)";
-      ctx.fillRect(0,0,w,h);
-
-      const maxC = Math.max(...hist, 1);
-      const bins = hist.length;
-      const pad = 10;
-      const bw = (w - 2*pad) / bins;
-
-      ctx.fillStyle = "rgba(255,255,255,0.85)";
-      for(let i=0;i<bins;i++){
-        const barH = (hist[i]/maxC) * (h - 2*pad);
-        const x = pad + i*bw;
-        const y = h - pad - barH;
-        ctx.fillRect(x, y, Math.max(1, bw-1), barH);
-      }
-
-      ctx.fillStyle = "rgba(255,255,255,0.9)";
-      ctx.font = "12px system-ui, Arial";
-      ctx.fillText("Intensity histogram (sampled points)", 10, 16);
-    }
-
-    function colorize(points, mode, params){
-      const { colors, intensities, classifications, positions } = points;
-      const n = points.count;
-
+    // ----------------------------
+    // Color mapping
+    // ----------------------------
+    function colorize(data, mode, params){
+      const { colors, intensities, classifications, positions } = data;
+      const n = data.count;
       const out = new Uint8Array(n*3);
 
       if(mode === "rgb"){
@@ -289,21 +328,16 @@
       }
 
       if(mode === "height"){
-        let minZ = params.minZ, maxZ = params.maxZ;
-        if(minZ == null || maxZ == null){
-          // compute from sampled points
-          minZ = Infinity; maxZ = -Infinity;
-          for(let i=0;i<n;i++){
-            const z = positions[i*3+2];
-            if(z<minZ) minZ=z;
-            if(z>maxZ) maxZ=z;
-          }
+        let minZ = Infinity, maxZ = -Infinity;
+        for(let i=0;i<n;i++){
+          const z = positions[i*3+2];
+          if(z<minZ) minZ=z;
+          if(z>maxZ) maxZ=z;
         }
         const range = Math.max(1e-9, maxZ - minZ);
         for(let i=0;i<n;i++){
           const z = positions[i*3+2];
           const t = Math.max(0, Math.min(1, (z-minZ)/range));
-          // simple gradient: blue->cyan->green->yellow->red
           const r = Math.max(0, Math.min(255, Math.floor(255 * Math.max(0, (t-0.5)*2))));
           const b = Math.max(0, Math.min(255, Math.floor(255 * Math.max(0, (0.5-t)*2))));
           const g = 255 - Math.max(r,b);
@@ -313,7 +347,6 @@
       }
 
       if(mode === "classification"){
-        // basic LAS classes palette
         const palette = new Map([
           [0,[200,200,200]], [1,[220,220,255]], [2,[120,200,120]], [3,[255,220,120]],
           [4,[255,120,120]], [5,[160,120,200]], [6,[120,120,255]], [7,[255,255,120]],
@@ -332,82 +365,136 @@
     }
 
     // ----------------------------
-    // Simple voxel-based comparison (density + mean Z difference)
+    // Histogram
     // ----------------------------
-    function compareVoxel(staticPts, dynamicPts, voxelSize){
-      // Returns summary statistics (lightweight, no huge maps)
-      const vs = Math.max(0.01, voxelSize);
+    function computeHistogram(values, minV, maxV, bins=64){
+      const h = new Array(bins).fill(0);
+      const range = maxV - minV;
+      if(range <= 0) return h;
+      for(let i=0;i<values.length;i++){
+        const v = values[i];
+        if(v < minV || v > maxV) continue;
+        const t = (v - minV)/range;
+        const b = Math.max(0, Math.min(bins-1, Math.floor(t * bins)));
+        h[b]++;
+      }
+      return h;
+    }
+    function drawHistogram(canvas, hist){
+      const ctx = canvas.getContext("2d");
+      const cssW = canvas.clientWidth, cssH = canvas.clientHeight;
+      const dpr = devicePixelRatio || 1;
+      canvas.width = Math.floor(cssW * dpr);
+      canvas.height = Math.floor(cssH * dpr);
+      ctx.setTransform(dpr,0,0,dpr,0,0);
 
-      // Build voxel map for static: key -> {count, sumZ}
-      const map = new Map();
-      const sp = staticPts.positions;
-      const sn = staticPts.count;
+      const w = cssW, h = cssH;
+      ctx.clearRect(0,0,w,h);
+      ctx.fillStyle = "rgba(0,0,0,0.25)";
+      ctx.fillRect(0,0,w,h);
 
-      for(let i=0;i<sn;i++){
-        const x = sp[i*3+0], y = sp[i*3+1], z = sp[i*3+2];
-        const ix = Math.floor(x/vs), iy = Math.floor(y/vs), iz = Math.floor(z/vs);
-        const key = `${ix},${iy},${iz}`;
-        const v = map.get(key);
-        if(v) { v.count++; v.sumZ += z; }
-        else { map.set(key, {count:1, sumZ:z}); }
+      const maxC = Math.max(...hist, 1);
+      const bins = hist.length;
+      const pad = 10;
+      const bw = (w - 2*pad) / bins;
+
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      for(let i=0;i<bins;i++){
+        const barH = (hist[i]/maxC) * (h - 2*pad);
+        const x = pad + i*bw;
+        const y = h - pad - barH;
+        ctx.fillRect(x, y, Math.max(1, bw-1), barH);
+      }
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.font = "12px system-ui, Arial";
+      ctx.fillText("Intensity histogram (sampled points)", 10, 16);
+    }
+
+    // ----------------------------
+    // Profile plotting
+    // ----------------------------
+    function drawProfilePlot(canvas, samples, yMode){
+      const ctx = canvas.getContext("2d");
+      const cssW = canvas.clientWidth, cssH = canvas.clientHeight;
+      const dpr = devicePixelRatio || 1;
+      canvas.width = Math.floor(cssW * dpr);
+      canvas.height = Math.floor(cssH * dpr);
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+
+      const w = cssW, h = cssH;
+      ctx.clearRect(0,0,w,h);
+      ctx.fillStyle = "rgba(0,0,0,0.25)";
+      ctx.fillRect(0,0,w,h);
+
+      if(!samples.length){
+        ctx.fillStyle = "rgba(255,255,255,0.85)";
+        ctx.font = "12px system-ui, Arial";
+        ctx.fillText("No points in corridor. Increase width or check picks.", 10, 20);
+        return;
       }
 
-      // Compare dynamic
-      const dp = dynamicPts.positions;
-      const dn = dynamicPts.count;
+      // samples: {d, z, i}
+      let minD = Infinity, maxD = -Infinity;
+      let minY = Infinity, maxY = -Infinity;
 
-      let overlap = 0;
-      let dynOnly = 0;
-
-      // For Z difference: compare voxel mean Zs where overlap exists (same voxel)
-      let zDiffSum = 0;
-      let zDiffN = 0;
-
-      // density ratio (avg points per occupied voxel)
-      let staticVox = map.size;
-
-      // Build dynamic occupancy quick
-      const dynMap = new Map();
-      for(let i=0;i<dn;i++){
-        const x = dp[i*3+0], y = dp[i*3+1], z = dp[i*3+2];
-        const ix = Math.floor(x/vs), iy = Math.floor(y/vs), iz = Math.floor(z/vs);
-        const key = `${ix},${iy},${iz}`;
-        const v = dynMap.get(key);
-        if(v) { v.count++; v.sumZ += z; }
-        else { dynMap.set(key, {count:1, sumZ:z}); }
+      for(const s of samples){
+        minD = Math.min(minD, s.d);
+        maxD = Math.max(maxD, s.d);
+        const yv = (yMode === "intensity") ? s.i : s.z;
+        minY = Math.min(minY, yv);
+        maxY = Math.max(maxY, yv);
       }
 
-      for(const [key, dv] of dynMap.entries()){
-        const sv = map.get(key);
-        if(sv){
-          overlap++;
-          const sz = sv.sumZ / sv.count;
-          const dz = dv.sumZ / dv.count;
-          zDiffSum += (dz - sz);
-          zDiffN++;
-        }else{
-          dynOnly++;
-        }
+      const pad = 28;
+      const dx = Math.max(1e-9, maxD - minD);
+      const dy = Math.max(1e-9, maxY - minY);
+
+      // axes
+      ctx.strokeStyle = "rgba(255,255,255,0.35)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pad, h-pad);
+      ctx.lineTo(w-pad, h-pad);
+      ctx.lineTo(w-pad, pad);
+      ctx.stroke();
+
+      // points
+      ctx.fillStyle = "rgba(255,255,255,0.8)";
+      for(const s of samples){
+        const x = pad + ((s.d - minD)/dx) * (w - 2*pad);
+        const yv = (yMode === "intensity") ? s.i : s.z;
+        const y = (h - pad) - ((yv - minY)/dy) * (h - 2*pad);
+        ctx.fillRect(x, y, 1.5, 1.5);
       }
 
-      const staticAvgDensity = sn / Math.max(1, staticVox);
-      const dynamicAvgDensity = dn / Math.max(1, dynMap.size);
-      const meanZDiff = zDiffN ? (zDiffSum / zDiffN) : 0;
+      // labels
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.font = "12px system-ui, Arial";
+      ctx.fillText(`Profile: Distance vs ${yMode === "intensity" ? "Intensity" : "Elevation"}`, 10, 16);
+      ctx.fillStyle = "rgba(255,255,255,0.75)";
+      ctx.fillText(`d: ${minD.toFixed(2)}–${maxD.toFixed(2)} m`, 10, h-8);
+      ctx.fillText(`${yMode === "intensity" ? "I" : "Z"}: ${minY.toFixed(2)}–${maxY.toFixed(2)}`, w-180, 16);
+    }
 
-      return {
-        voxelSize: vs,
-        static: {sampledPoints: sn, occupiedVoxels: staticVox, avgPtsPerVoxel: staticAvgDensity},
-        dynamic:{sampledPoints: dn, occupiedVoxels: dynMap.size, avgPtsPerVoxel: dynamicAvgDensity},
-        overlapVoxels: overlap,
-        dynamicOnlyVoxels: dynOnly,
-        meanZDiff_dynamic_minus_static: meanZDiff
-      };
+    // Distance from point P to segment AB in 3D:
+    // returns {t, dist}, where t in [0,1] is projection parameter, dist is perpendicular distance
+    function pointToSegment3D(P, A, B){
+      const AB = new THREE.Vector3().subVectors(B, A);
+      const AP = new THREE.Vector3().subVectors(P, A);
+      const ab2 = AB.dot(AB);
+      if(ab2 <= 1e-12){
+        return { t: 0, dist: P.distanceTo(A) };
+      }
+      let t = AP.dot(AB) / ab2;
+      t = Math.max(0, Math.min(1, t));
+      const proj = new THREE.Vector3().copy(A).addScaledVector(AB, t);
+      const dist = P.distanceTo(proj);
+      return { t, dist };
     }
 
     // ----------------------------
     // Three.js scene
     // ----------------------------
-    const canvasWrap = document.getElementById("canvasWrap");
     const renderer = new THREE.WebGLRenderer({ antialias:true });
     renderer.setPixelRatio(devicePixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -417,74 +504,68 @@
     const scene = new THREE.Scene();
     scene.fog = new THREE.Fog(0x0b1220, 20, 8000);
 
-    const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1e9);
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1e12);
     camera.position.set(0, -50, 30);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
 
-    // Lights (minimal)
-    const amb = new THREE.AmbientLight(0xffffff, 0.6);
-    scene.add(amb);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+    scene.add(new THREE.AxesHelper(10));
 
-    // Axis helper (optional)
-    const axes = new THREE.AxesHelper(10);
-    scene.add(axes);
+    const statusEl = document.getElementById("status");
+    const metaEl = document.getElementById("meta");
+    const histCanvas = document.getElementById("hist");
+    const plotCanvas = document.getElementById("plot");
 
-    // Layer state
     const layers = {
-      static: { points: null, data: null, header: null, name: "STATIC" },
-      dynamic:{ points: null, data: null, header: null, name: "DYNAMIC" }
+      static: { header:null, data:null, points:null, name:"STATIC" },
+      dynamic:{ header:null, data:null, points:null, name:"DYNAMIC" }
     };
 
-    function buildPointCloud(layerKey){
-      const layer = layers[layerKey];
-      if(!layer.data) return;
+    // Profile interaction state
+    let pickingProfile = false;
+    let pickA = null;
+    let pickB = null;
+    let pickMarkers = [];
+    let profileLine = null;
 
-      // Geometry
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute("position", new THREE.BufferAttribute(layer.data.positions, 3));
+    const raycaster = new THREE.Raycaster();
+    raycaster.params.Points.threshold = 0.5; // this is in world units; we will update with point size below
 
-      // initial colors
-      const mode = document.getElementById("colorMode").value;
-      const minI = Number(document.getElementById("iMin").value);
-      const maxI = Number(document.getElementById("iMax").value);
-      const col = colorize(layer.data, mode, {minI, maxI});
-      geom.setAttribute("color", new THREE.BufferAttribute(col, 3, true));
+    function activeKey(){
+      return document.getElementById("activeLayer").value;
+    }
+    function layerVisible(key){
+      return document.getElementById(key === "static" ? "chkStatic" : "chkDynamic").checked;
+    }
 
-      geom.computeBoundingBox();
-
-      const mat = new THREE.PointsMaterial({
-        size: Number(document.getElementById("ptSize").value),
-        vertexColors: true,
-        transparent: true,
-        opacity: Number(document.getElementById("opacity").value),
-        depthTest: true
-      });
-
-      const pts = new THREE.Points(geom, mat);
-      pts.name = layer.name;
-
-      // replace old
-      if(layer.points) scene.remove(layer.points);
-      layer.points = pts;
-      scene.add(pts);
-
-      fitView();
-      updateMeta();
-      updateHistogramFor(layerKey);
+    function updateMeta(){
+      const out = {};
+      for(const k of ["static","dynamic"]){
+        const h = layers[k].header;
+        const d = layers[k].data;
+        out[k] = h ? {
+          version: `${h.versionMajor}.${h.versionMinor}`,
+          pointFormat: h.pointFormat,
+          pointRecordLength: h.pointRecordLength,
+          pointCount_in_file: h.pointCount,
+          points_loaded_sampled: d?.count ?? 0,
+          bounds: h.bounds,
+          scale: h.scale,
+          offset: h.offset,
+          systemId: h.systemId,
+          generatingSoftware: h.generatingSoftware
+        } : "(not loaded)";
+      }
+      metaEl.textContent = JSON.stringify(out, null, 2);
     }
 
     function fitView(){
-      // Fit to whichever is visible and loaded
       const boxes = [];
       for(const k of ["static","dynamic"]){
         const p = layers[k].points;
-        const vis = document.getElementById(k === "static" ? "chkStatic" : "chkDynamic").checked;
-        if(p && vis){
-          const bb = p.geometry.boundingBox;
-          if(bb) boxes.push(bb);
-        }
+        if(p && layerVisible(k) && p.geometry.boundingBox) boxes.push(p.geometry.boundingBox);
       }
       if(!boxes.length) return;
 
@@ -503,14 +584,58 @@
       controls.update();
     }
 
-    function applyStyleToLayer(layerKey){
-      const layer = layers[layerKey];
-      if(!layer.points) return;
+    function rebuildGeometry(key){
+      const layer = layers[key];
+      if(!layer.data) return;
+
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute("position", new THREE.BufferAttribute(layer.data.positions, 3));
+
+      const mode = document.getElementById("colorMode").value;
+      const minI = Number(document.getElementById("iMin").value);
+      const maxI = Number(document.getElementById("iMax").value);
+
+      const col = colorize(layer.data, mode, {minI, maxI});
+      geom.setAttribute("color", new THREE.BufferAttribute(col, 3, true));
+      geom.computeBoundingBox();
+
+      const mat = new THREE.PointsMaterial({
+        size: Number(document.getElementById("ptSize").value),
+        vertexColors: true,
+        transparent: true,
+        opacity: Number(document.getElementById("opacity").value),
+        depthTest: true
+      });
+
+      const pts = new THREE.Points(geom, mat);
+      pts.name = layer.name;
+
+      if(layer.points) scene.remove(layer.points);
+      layer.points = pts;
+      scene.add(pts);
+
+      setVisibility();
+
+      fitView();
+      updateMeta();
+      updateHistogram(key);
+    }
+
+    function setVisibility(){
+      if(layers.static.points) layers.static.points.visible = document.getElementById("chkStatic").checked;
+      if(layers.dynamic.points) layers.dynamic.points.visible = document.getElementById("chkDynamic").checked;
+    }
+
+    function applyStyle(key){
+      const layer = layers[key];
+      if(!layer.points || !layer.data) return;
 
       layer.points.material.size = Number(document.getElementById("ptSize").value);
       layer.points.material.opacity = Number(document.getElementById("opacity").value);
 
-      // recolor
+      // raycaster threshold should roughly scale with point size
+      raycaster.params.Points.threshold = Math.max(0.05, layer.points.material.size * 0.6);
+
       const mode = document.getElementById("colorMode").value;
       const minI = Number(document.getElementById("iMin").value);
       const maxI = Number(document.getElementById("iMax").value);
@@ -521,231 +646,253 @@
         attr.array.set(col);
         attr.needsUpdate = true;
       }
-
-      // classification filter (optional, hide non-selected by alpha trick not available with PointsMaterial easily)
-      // We do "hard filter" by rebuilding geometry if filter is set.
     }
 
-    function setVisibility(){
-      if(layers.static.points) layers.static.points.visible = document.getElementById("chkStatic").checked;
-      if(layers.dynamic.points) layers.dynamic.points.visible = document.getElementById("chkDynamic").checked;
-    }
-
-    function updateMeta(){
-      const meta = {};
-      for(const k of ["static","dynamic"]){
-        const h = layers[k].header;
-        const d = layers[k].data;
-        meta[k] = h ? {
-          version: `${h.versionMajor}.${h.versionMinor}`,
-          pointFormat: h.pointFormat,
-          pointRecordLength: h.pointRecordLength,
-          pointCount_in_file: h.pointCount,
-          points_loaded_sampled: d?.count ?? 0,
-          scale: h.scale,
-          offset: h.offset,
-          bounds: h.bounds,
-          systemId: h.systemId,
-          generatingSoftware: h.generatingSoftware
-        } : "(not loaded)";
-      }
-      document.getElementById("meta").textContent = JSON.stringify(meta, null, 2);
-    }
-
-    function updateHistogramFor(layerKey){
-      const layer = layers[layerKey];
+    function updateHistogram(key){
+      const layer = layers[key];
       if(!layer.data) return;
 
       const minI = Number(document.getElementById("iMin").value);
       const maxI = Number(document.getElementById("iMax").value);
       const hist = computeHistogram(layer.data.intensities, minI, maxI, 64);
-
-      const canvas = document.getElementById("hist");
-      // Ensure proper resolution
-      const cssW = canvas.clientWidth, cssH = canvas.clientHeight;
-      const dpr = devicePixelRatio || 1;
-      canvas.width = Math.floor(cssW * dpr);
-      canvas.height = Math.floor(cssH * dpr);
-      const ctx = canvas.getContext("2d");
-      ctx.setTransform(dpr,0,0,dpr,0,0);
-
-      drawHistogram(canvas, hist);
+      drawHistogram(histCanvas, hist);
     }
 
-    async function loadLASFile(file, layerKey){
-      const status = document.getElementById("status");
-      status.textContent = `Loading ${layerKey.toUpperCase()} ...`;
+    function parseClassFilter(){
+      const raw = document.getElementById("classList").value.trim();
+      if(!raw) return null;
+      const nums = raw.split(",").map(s => parseInt(s.trim(),10)).filter(n => Number.isFinite(n));
+      return nums.length ? new Set(nums) : null;
+    }
+
+    async function loadLAS(file, key){
+      statusEl.textContent = `Loading ${key.toUpperCase()}...`;
 
       const buf = await file.arrayBuffer();
       const header = parseLASHeader(buf);
 
-      // Sampling controls
       const maxPoints = Number(document.getElementById("maxPoints").value);
       const stride = Number(document.getElementById("stride").value);
-
-      // Optional Z filter
       const zMin = Number(document.getElementById("zMin").value);
       const zMax = Number(document.getElementById("zMax").value);
+      const classFilter = parseClassFilter();
 
-      // Classification filter (hard filter)
-      const clsText = document.getElementById("classList").value.trim();
-      const want = clsText ? new Set(clsText.split(",").map(s => parseInt(s.trim(),10)).filter(n => Number.isFinite(n))) : null;
+      const data = parsePoints(buf, header, {maxPoints, stride, zMin, zMax, classFilter});
 
-      // Parse points (sampled)
-      const pts = parsePoints(buf, header, {maxPoints, stride, zMin, zMax});
+      layers[key].header = header;
+      layers[key].data = data;
 
-      // If classification filter set: rebuild arrays filtered
-      let data = pts;
-      if(want){
-        const n = pts.count;
-        const keepIdx = [];
-        for(let i=0;i<n;i++){
-          if(want.has(pts.classifications[i])) keepIdx.push(i);
-        }
-        const m = keepIdx.length;
-        const pos = new Float32Array(m*3);
-        const inten = new Float32Array(m);
-        const cls = new Uint16Array(m);
-        const col = new Uint8Array(m*3);
-        for(let j=0;j<m;j++){
-          const i = keepIdx[j];
-          pos[j*3+0]=pts.positions[i*3+0];
-          pos[j*3+1]=pts.positions[i*3+1];
-          pos[j*3+2]=pts.positions[i*3+2];
-          inten[j]=pts.intensities[i];
-          cls[j]=pts.classifications[i];
-          col[j*3+0]=pts.colors[i*3+0];
-          col[j*3+1]=pts.colors[i*3+1];
-          col[j*3+2]=pts.colors[i*3+2];
-        }
-        data = {count:m, positions:pos, intensities:inten, classifications:cls, colors:col};
-      }
+      rebuildGeometry(key);
 
-      layers[layerKey].header = header;
-      layers[layerKey].data = data;
-
-      buildPointCloud(layerKey);
-
-      status.textContent =
-        `${layerKey.toUpperCase()} loaded: sampled ${data.count.toLocaleString()} points (from file count ${Number(header.pointCount).toLocaleString()}).`;
+      statusEl.textContent =
+        `${key.toUpperCase()} loaded: sampled ${data.count.toLocaleString()} points (from file count ${Number(header.pointCount).toLocaleString()}).`;
     }
 
-    // Cross section (simple): keep points within Z band around a plane Z = z0
-    function applyCrossSection(){
-      const enabled = document.getElementById("crossEnable").checked;
-      const z0 = Number(document.getElementById("crossZ").value);
-      const half = Number(document.getElementById("crossHalf").value);
+    // ----------------------------
+    // Profile pick + corridor sampling
+    // ----------------------------
+    function clearProfile(){
+      pickA = null; pickB = null;
+      pickingProfile = false;
 
-      const active = document.getElementById("activeLayer").value;
-      const layer = layers[active];
-      if(!layer.header) return;
+      for(const m of pickMarkers) scene.remove(m);
+      pickMarkers = [];
 
-      // If disabled: reload style only (no rebuild)
-      if(!enabled){
-        buildPointCloud(active);
-        return;
-      }
+      if(profileLine) scene.remove(profileLine);
+      profileLine = null;
 
-      // Filter from original sampled data currently in layer.data (note: if already filtered, re-filter)
-      const src = layer.data;
-      const n = src.count;
+      drawProfilePlot(plotCanvas, [], document.getElementById("profileY").value);
 
-      const keep = [];
+      document.getElementById("btnProfileClear").disabled = true;
+      document.getElementById("btnProfileStart").disabled = false;
+      statusEl.textContent = "Profile cleared.";
+    }
+
+    function addMarker(pos, color=0xffffff){
+      const g = new THREE.SphereGeometry(0.15, 12, 12);
+      const m = new THREE.MeshBasicMaterial({ color });
+      const s = new THREE.Mesh(g, m);
+      s.position.copy(pos);
+      scene.add(s);
+      pickMarkers.push(s);
+    }
+
+    function setProfileLine(A, B){
+      if(profileLine) scene.remove(profileLine);
+      const geom = new THREE.BufferGeometry().setFromPoints([A, B]);
+      const mat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent:true, opacity:0.9 });
+      profileLine = new THREE.Line(geom, mat);
+      scene.add(profileLine);
+    }
+
+    function computeProfileSamples(key, A, B, width, yMode){
+      const layer = layers[key];
+      if(!layer.data) return [];
+
+      const pos = layer.data.positions;
+      const inten = layer.data.intensities;
+
+      const half = width / 2;
+      const samples = [];
+
+      // For speed, we can subsample further if needed (optional)
+      const n = layer.data.count;
+
+      // Precompute segment length
+      const AB = new THREE.Vector3().subVectors(B, A);
+      const segLen = AB.length();
+      if(segLen <= 1e-9) return [];
+
+      // Iterate all sampled points and select within corridor
+      // P in corridor if dist(P, segment AB) <= half
+      const P = new THREE.Vector3();
       for(let i=0;i<n;i++){
-        const z = src.positions[i*3+2];
-        if(Math.abs(z - z0) <= half) keep.push(i);
+        P.set(pos[i*3+0], pos[i*3+1], pos[i*3+2]);
+        const { t, dist } = pointToSegment3D(P, A, B);
+        if(dist <= half){
+          const d = t * segLen; // distance along segment
+          const z = P.z;
+          const I = inten[i];
+          samples.push({ d, z, i: I });
+        }
       }
 
-      const m = keep.length;
-      const pos = new Float32Array(m*3);
-      const inten = new Float32Array(m);
-      const cls = new Uint16Array(m);
-      const col = new Uint8Array(m*3);
+      // Sort by distance for nicer plot
+      samples.sort((a,b)=>a.d-b.d);
 
-      for(let j=0;j<m;j++){
-        const i = keep[j];
-        pos[j*3+0]=src.positions[i*3+0];
-        pos[j*3+1]=src.positions[i*3+1];
-        pos[j*3+2]=src.positions[i*3+2];
-        inten[j]=src.intensities[i];
-        cls[j]=src.classifications[i];
-        col[j*3+0]=src.colors[i*3+0];
-        col[j*3+1]=src.colors[i*3+1];
-        col[j*3+2]=src.colors[i*3+2];
+      // Light thinning for plot (optional): keep at most ~30k points for canvas
+      const maxPlot = 30000;
+      if(samples.length > maxPlot){
+        const step = Math.ceil(samples.length / maxPlot);
+        const thinned = [];
+        for(let i=0;i<samples.length;i+=step) thinned.push(samples[i]);
+        return thinned;
       }
 
-      layers[active].data = {count:m, positions:pos, intensities:inten, classifications:cls, colors:col};
-      buildPointCloud(active);
+      return samples;
     }
 
-    function runCompare(){
-      const s = layers.static.data;
-      const d = layers.dynamic.data;
-      if(!s || !d){
-        alert("Load BOTH static and dynamic first.");
+    function runProfile(){
+      const key = activeKey();
+      if(!pickA || !pickB) return;
+
+      const width = Number(document.getElementById("profileWidth").value);
+      const yMode = document.getElementById("profileY").value;
+
+      const samples = computeProfileSamples(key, pickA, pickB, width, yMode);
+      drawProfilePlot(plotCanvas, samples, yMode);
+
+      statusEl.textContent = `Profile computed for ${key.toUpperCase()}: ${samples.length.toLocaleString()} plotted points (within width ${width} m).`;
+    }
+
+    function pickPointFromActiveLayer(clientX, clientY){
+      const key = activeKey();
+      const layer = layers[key];
+      if(!layer.points || !layer.points.visible) return null;
+
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -(((clientY - rect.top) / rect.height) * 2 - 1);
+
+      raycaster.setFromCamera({x,y}, camera);
+      const intersects = raycaster.intersectObject(layer.points, false);
+      if(!intersects.length) return null;
+
+      // intersect.point is in world coords
+      return intersects[0].point.clone();
+    }
+
+    renderer.domElement.addEventListener("pointerdown", (e) => {
+      if(!pickingProfile) return;
+
+      // prevent orbit controls drag from interfering
+      e.preventDefault();
+
+      const p = pickPointFromActiveLayer(e.clientX, e.clientY);
+      if(!p){
+        statusEl.textContent = "No point hit. Zoom in or increase point size / threshold.";
         return;
       }
-      const voxel = Number(document.getElementById("voxel").value);
-      const res = compareVoxel(s, d, voxel);
-      document.getElementById("compareOut").textContent = JSON.stringify(res, null, 2);
-    }
+
+      if(!pickA){
+        pickA = p;
+        addMarker(pickA, 0x00ffcc);
+        statusEl.textContent = "Pick #1 set. Now click point #2.";
+        return;
+      }
+
+      if(!pickB){
+        pickB = p;
+        addMarker(pickB, 0xffcc00);
+        setProfileLine(pickA, pickB);
+
+        pickingProfile = false;
+        document.getElementById("btnProfileClear").disabled = false;
+        document.getElementById("btnProfileStart").disabled = false;
+
+        runProfile();
+      }
+    }, { passive:false });
 
     // ----------------------------
-    // UI wiring
+    // UI handlers
     // ----------------------------
-    function bindUI(){
-      // file loaders
-      document.getElementById("fileStatic").addEventListener("change", (e)=>{
-        const f = e.target.files?.[0];
-        if(f) loadLASFile(f, "static").catch(err => alert(err.message));
-      });
-      document.getElementById("fileDynamic").addEventListener("change", (e)=>{
-        const f = e.target.files?.[0];
-        if(f) loadLASFile(f, "dynamic").catch(err => alert(err.message));
-      });
+    document.getElementById("fileStatic").addEventListener("change", (e)=>{
+      const f = e.target.files?.[0];
+      if(f) loadLAS(f, "static").catch(err => alert(err.message));
+    });
+    document.getElementById("fileDynamic").addEventListener("change", (e)=>{
+      const f = e.target.files?.[0];
+      if(f) loadLAS(f, "dynamic").catch(err => alert(err.message));
+    });
 
-      // style controls
-      ["ptSize","opacity","colorMode","iMin","iMax"].forEach(id=>{
-        document.getElementById(id).addEventListener("input", ()=>{
-          const active = document.getElementById("activeLayer").value;
-          if(layers[active].points) applyStyleToLayer(active);
-          updateHistogramFor(active);
-        });
+    document.getElementById("chkStatic").addEventListener("change", ()=>setVisibility());
+    document.getElementById("chkDynamic").addEventListener("change", ()=>setVisibility());
+
+    document.getElementById("btnFit").addEventListener("click", ()=>fitView());
+
+    ["ptSize","opacity","colorMode","iMin","iMax"].forEach(id=>{
+      document.getElementById(id).addEventListener("input", ()=>{
+        const k = activeKey();
+        applyStyle(k);
+        updateHistogram(k);
+        // if profile already defined, refresh plot to reflect y-mode changes if needed
+        if(pickA && pickB) runProfile();
       });
+    });
 
-      // visibility
-      ["chkStatic","chkDynamic"].forEach(id=>{
-        document.getElementById(id).addEventListener("change", ()=>{ setVisibility(); });
-      });
+    document.getElementById("btnHist").addEventListener("click", ()=>{
+      updateHistogram(activeKey());
+    });
 
-      document.getElementById("btnRebuild").addEventListener("click", ()=>{
-        // Re-parse needed for stride/maxPoints/class filter/z-range changes
-        alert("Untuk perubahan stride/maxPoints/z-range/class filter, klik Load ulang file (pilih file lagi).");
-      });
+    document.getElementById("btnProfileStart").addEventListener("click", ()=>{
+      const key = activeKey();
+      if(!layers[key].points){
+        alert("Load the active layer first.");
+        return;
+      }
+      pickingProfile = true;
+      pickA = null; pickB = null;
 
-      document.getElementById("btnFit").addEventListener("click", ()=>fitView());
-      document.getElementById("btnHist").addEventListener("click", ()=>{
-        const active = document.getElementById("activeLayer").value;
-        updateHistogramFor(active);
-      });
+      for(const m of pickMarkers) scene.remove(m);
+      pickMarkers = [];
+      if(profileLine) scene.remove(profileLine);
+      profileLine = null;
 
-      // cross section
-      ["crossEnable","crossZ","crossHalf"].forEach(id=>{
-        document.getElementById(id).addEventListener("input", ()=>applyCrossSection());
-      });
+      document.getElementById("btnProfileStart").disabled = true;
+      document.getElementById("btnProfileClear").disabled = false;
 
-      // compare
-      document.getElementById("btnCompare").addEventListener("click", ()=>runCompare());
-    }
+      statusEl.textContent = "Profile picking enabled. Click point #1, then point #2.";
+    });
 
-    // ----------------------------
-    // Animation loop
-    // ----------------------------
-    function animate(){
-      requestAnimationFrame(animate);
-      controls.update();
-      renderer.render(scene, camera);
-    }
+    document.getElementById("btnProfileClear").addEventListener("click", ()=>clearProfile());
+
+    document.getElementById("profileWidth").addEventListener("input", ()=>{
+      if(pickA && pickB) runProfile();
+    });
+    document.getElementById("profileY").addEventListener("change", ()=>{
+      if(pickA && pickB) runProfile();
+    });
 
     window.addEventListener("resize", ()=>{
       camera.aspect = window.innerWidth/window.innerHeight;
@@ -753,118 +900,15 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    // init UI after DOM exists
-    window.addEventListener("DOMContentLoaded", ()=>{
-      bindUI();
-      animate();
-      document.getElementById("status").textContent =
-        "Ready. Load STATIC and/or DYNAMIC LAS 1.4. Gunakan sampling (stride/maxPoints) untuk file besar.";
-    });
-
-    // expose for debugging if needed
-    window.__LAS_VIEWER__ = { layers };
+    // ----------------------------
+    // Animate
+    // ----------------------------
+    function animate(){
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
   </script>
-</head>
-
-<body>
-  <div id="canvasWrap"></div>
-
-  <div id="ui">
-    <h1>Local LAS 1.4 Viewer (No Cesium, No Potree)</h1>
-
-    <div class="card">
-      <label>Load STATIC (.las)</label>
-      <input type="file" id="fileStatic" accept=".las" />
-
-      <label style="margin-top:10px;">Load DYNAMIC (.las)</label>
-      <input type="file" id="fileDynamic" accept=".las" />
-
-      <div id="status"></div>
-    </div>
-
-    <div class="card">
-      <div class="row">
-        <label><input type="checkbox" id="chkStatic" checked /> Show STATIC</label>
-        <label><input type="checkbox" id="chkDynamic" checked /> Show DYNAMIC</label>
-      </div>
-
-      <label>Active layer (for controls)</label>
-      <select id="activeLayer">
-        <option value="static">STATIC</option>
-        <option value="dynamic">DYNAMIC</option>
-      </select>
-
-      <label>Point size</label>
-      <input type="range" id="ptSize" min="0.5" max="10" step="0.1" value="2" />
-
-      <label>Opacity</label>
-      <input type="range" id="opacity" min="0.05" max="1" step="0.01" value="1" />
-
-      <button id="btnFit">Fit View</button>
-    </div>
-
-    <div class="card">
-      <label>Sampling: max points loaded (per layer)</label>
-      <input type="number" id="maxPoints" value="2000000" min="10000" step="10000" />
-
-      <label>Sampling stride (1 = every point, 10 = take 1 of 10)</label>
-      <input type="number" id="stride" value="5" min="1" step="1" />
-
-      <label>Z filter (optional) - Min / Max</label>
-      <div class="row">
-        <input type="number" id="zMin" value="-1e20" />
-        <input type="number" id="zMax" value="1e20" />
-      </div>
-
-      <label>Classification filter (comma-separated). Example: 2,5,6</label>
-      <input type="text" id="classList" placeholder="empty = no filter" />
-
-      <button id="btnRebuild">Note: For stride/maxPoints/z/class changes, re-load file</button>
-    </div>
-
-    <div class="card">
-      <label>Color mode</label>
-      <select id="colorMode">
-        <option value="rgb">RGB (if exists)</option>
-        <option value="intensity">Intensity</option>
-        <option value="classification">Classification</option>
-        <option value="height">Height (Z)</option>
-      </select>
-
-      <label>Intensity range</label>
-      <div class="row">
-        <input type="number" id="iMin" value="0" />
-        <input type="number" id="iMax" value="65535" />
-      </div>
-
-      <label>Histogram (Intensity)</label>
-      <canvas id="hist"></canvas>
-      <button id="btnHist">Update Histogram</button>
-    </div>
-
-    <div class="card">
-      <label><input type="checkbox" id="crossEnable" /> Cross section by Z band (simple)</label>
-      <label>Center Z</label>
-      <input type="number" id="crossZ" value="0" step="0.1" />
-      <label>Half thickness (meters)</label>
-      <input type="number" id="crossHalf" value="0.25" step="0.05" />
-      <div style="font-size:12px; color:#9ca3af; margin-top:6px;">
-        Ini cross section sederhana berbasis Z-band. Untuk profil sepanjang garis (2-click), bisa ditambah setelah workflow ini stabil.
-      </div>
-    </div>
-
-    <div class="card">
-      <label>Compare STATIC vs DYNAMIC (voxel analysis)</label>
-      <label>Voxel size (m)</label>
-      <input type="number" id="voxel" value="0.2" step="0.05" />
-      <button id="btnCompare">Run Compare</button>
-      <pre id="compareOut"></pre>
-    </div>
-
-    <div class="card">
-      <label>Metadata</label>
-      <pre id="meta"></pre>
-    </div>
-  </div>
 </body>
 </html>
