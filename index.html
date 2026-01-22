@@ -2,98 +2,282 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>A-Frame GLTF Auto-Ground</title>
+  <title>A-Frame Drop Viewer — GLB/GLTF/LAS (Auto-Ground)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- A-Frame (includes THREE as global) -->
   <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
 
   <style>
-    body { margin:0; background:#0b0f1a; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
-    .ui {
-      position: fixed; top: 12px; left: 12px; z-index: 10;
-      padding: 12px 14px;
-      background: rgba(0,0,0,.55);
-      color: #fff;
-      border-radius: 12px;
-      border: 1px solid rgba(255,255,255,.2);
+    body { margin:0; background:#0b0f1a; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    .panel{
+      position: fixed; inset: 12px 12px auto 12px; z-index: 10;
+      display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+      padding: 12px 14px; border-radius: 14px;
+      background: rgba(0,0,0,0.55); color: #fff;
+      border: 1px solid rgba(255,255,255,0.16);
       backdrop-filter: blur(8px);
     }
-    .ui input {
-      width: 420px; max-width: 100%;
-      padding: 8px 10px;
-      border-radius: 8px;
-      border: 1px solid rgba(255,255,255,.2);
-      background: rgba(255,255,255,.08);
-      color: #fff;
-      margin-top: 6px;
+    .dropzone{
+      width: min(620px, 100%);
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px dashed rgba(255,255,255,0.28);
+      background: rgba(255,255,255,0.06);
+      line-height: 1.3;
     }
+    .dropzone.dragover{ border-style: solid; }
+    .row{ display:flex; gap:10px; align-items:center; flex-wrap: wrap; width: 100%; }
+    .btn{
+      padding: 10px 12px; border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.10);
+      color: #fff; cursor: pointer;
+    }
+    .small{ font-size: 13px; opacity: 0.85; }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
   </style>
 </head>
 
 <body>
+  <div class="panel">
+    <div class="dropzone" id="dropzone">
+      <div><strong>Drop files here:</strong> <span class="mono">.glb .gltf .las</span></div>
+      <div class="small">All loaded data will be placed on top of the ground (Y=0) automatically.</div>
+    </div>
 
-<div class="ui">
-  <strong>GLTF / GLB URL</strong><br>
-  <input id="url"
-    value="https://cdn.aframe.io/test-models/models/glTF/Duck/glTF-Binary/Duck.glb">
-</div>
+    <div class="row">
+      <label class="btn" for="fileInput">Upload files</label>
+      <input id="fileInput" type="file" multiple accept=".glb,.gltf,.las" style="display:none" />
+      <button class="btn" id="clearBtn">Clear scene</button>
+      <div class="small" id="status">Ready.</div>
+    </div>
+  </div>
 
-<a-scene
-  renderer="colorManagement: true; physicallyCorrectLights: true"
-  background="color: #0b0f1a">
+  <a-scene
+    renderer="colorManagement: true; physicallyCorrectLights: true; antialias: true"
+    background="color: #0b0f1a"
+    vr-mode-ui="enabled: true">
 
-  <!-- Lighting -->
-  <a-entity light="type: ambient; intensity: 0.6"></a-entity>
-  <a-entity light="type: directional; intensity: 1.2" position="3 5 2"></a-entity>
+    <!-- Lights -->
+    <a-entity light="type: ambient; intensity: 0.65"></a-entity>
+    <a-entity light="type: directional; intensity: 1.15" position="3 6 2"></a-entity>
 
-  <!-- Ground (Y = 0) -->
-  <a-plane
-    rotation="-90 0 0"
-    width="50"
-    height="50"
-    color="#111827"
-    material="roughness:1; metalness:0">
-  </a-plane>
+    <!-- Ground plane at Y=0 -->
+    <a-plane rotation="-90 0 0" width="120" height="120" color="#111827"
+             material="roughness:1; metalness:0"></a-plane>
 
-  <!-- Model -->
-  <a-entity id="model"></a-entity>
+    <!-- Optional: a reference grid using thin lines (simple) -->
+    <a-entity id="grid"></a-entity>
 
-  <!-- Camera -->
-  <a-entity position="0 1.6 4">
-    <a-camera wasd-controls look-controls></a-camera>
-  </a-entity>
+    <!-- Camera -->
+    <a-entity id="rig" position="0 1.6 6">
+      <a-camera wasd-controls="acceleration: 25" look-controls="pointerLockEnabled: false"></a-camera>
+    </a-entity>
+  </a-scene>
 
-</a-scene>
+  <script type="module">
+    // We will parse LAS in-browser using loaders.gl:
+    // @loaders.gl/core + @loaders.gl/las
+    import { load } from 'https://unpkg.com/@loaders.gl/core@4.3.3/dist/dist.min.js';
+    import { LASLoader } from 'https://unpkg.com/@loaders.gl/las@4.3.3/dist/dist.min.js';
 
-<script>
-const input = document.getElementById('url');
-const modelEl = document.getElementById('model');
+    const sceneEl = document.querySelector('a-scene');
+    const statusEl = document.getElementById('status');
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+    const clearBtn = document.getElementById('clearBtn');
 
-function loadModel(url) {
-  modelEl.setAttribute('gltf-model', url);
-}
+    // Keep track of loaded A-Frame entities so we can clear them
+    const loadedEntities = [];
+    let loadIndex = 0;
 
-input.addEventListener('change', () => loadModel(input.value));
+    // Simple X offset so multiple loads don't overlap
+    function computeXOffset(idx){
+      // 2.5 meters spacing; adjust as needed
+      return (idx % 6) * 2.5 - 6.25;
+    }
 
-/**
- * AUTO PLACE MODEL ON GROUND
- */
-modelEl.addEventListener('model-loaded', () => {
-  const mesh = modelEl.getObject3D('mesh');
-  if (!mesh) return;
+    function setStatus(msg){
+      statusEl.textContent = msg;
+    }
 
-  // Compute bounding box
-  const box = new THREE.Box3().setFromObject(mesh);
-  const minY = box.min.y;
+    function extOf(name){
+      const n = (name || '').toLowerCase();
+      const i = n.lastIndexOf('.');
+      return i >= 0 ? n.slice(i) : '';
+    }
 
-  // Move model so bottom touches Y=0
-  modelEl.object3D.position.y -= minY;
+    function isSupported(file){
+      const e = extOf(file.name);
+      return e === '.glb' || e === '.gltf' || e === '.las';
+    }
 
-  console.log('Model grounded. minY:', minY);
-});
+    // --- Auto-ground helper for any THREE.Object3D
+    function groundObject3D(obj3d){
+      // bounding box in world/local? We compute from object itself in its current transform.
+      const box = new THREE.Box3().setFromObject(obj3d);
+      const minY = box.min.y;
+      if (!Number.isFinite(minY)) return;
 
-// Initial load
-loadModel(input.value);
-</script>
+      // Shift object upward so its lowest point touches Y=0
+      obj3d.position.y -= minY;
+    }
 
+    // --- Create a simple grid helper (optional)
+    function addGrid(){
+      const grid = new THREE.GridHelper(120, 120, undefined, undefined);
+      grid.position.y = 0.0001; // avoid z-fighting with plane
+      sceneEl.object3D.add(grid);
+    }
+    addGrid();
+
+    // --- Load GLB/GLTF (creates a-entity with gltf-model)
+    function loadGltfFile(file){
+      const idx = loadIndex++;
+      const url = URL.createObjectURL(file);
+
+      const entity = document.createElement('a-entity');
+      entity.setAttribute('gltf-model', url);
+      entity.setAttribute('position', `${computeXOffset(idx)} 0 -3`);
+      entity.setAttribute('rotation', '0 0 0');
+      entity.setAttribute('scale', '1 1 1');
+
+      // Once model is loaded, ground it (touch Y=0)
+      entity.addEventListener('model-loaded', () => {
+        const mesh = entity.getObject3D('mesh');
+        if (!mesh) return;
+
+        // Ground the internal mesh; or alternatively shift entity itself
+        // We'll shift the entity by computing bbox from mesh in world, then adjust entity.y
+        const box = new THREE.Box3().setFromObject(mesh);
+        const minY = box.min.y;
+        if (Number.isFinite(minY)) {
+          entity.object3D.position.y -= minY;
+        }
+
+        setStatus(`Loaded: ${file.name} (grounded)`);
+      });
+
+      entity.addEventListener('model-error', (e) => {
+        console.error('GLTF model error:', file.name, e?.detail);
+        setStatus(`Error loading: ${file.name}`);
+      });
+
+      sceneEl.appendChild(entity);
+      loadedEntities.push(entity);
+
+      setStatus(`Loading: ${file.name} ...`);
+    }
+
+    // --- Load LAS (parse points -> THREE.BufferGeometry -> THREE.Points)
+    async function loadLasFile(file){
+      const idx = loadIndex++;
+      setStatus(`Parsing LAS: ${file.name} ...`);
+
+      const arrayBuffer = await file.arrayBuffer();
+
+      // loaders.gl returns a "point cloud" like object
+      const las = await load(arrayBuffer, LASLoader);
+
+      // las.attributes.POSITION.value is typically a typed array
+      const positions = las?.attributes?.POSITION?.value;
+      if (!positions || positions.length < 3) {
+        setStatus(`LAS parsed but no positions: ${file.name}`);
+        return;
+      }
+
+      // Build THREE geometry
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+      // Optional: if COLOR exists, use it
+      const colors = las?.attributes?.COLOR_0?.value || las?.attributes?.COLOR?.value;
+      let material;
+      if (colors && colors.length === (positions.length)) {
+        // If colors are 0..255, normalize to 0..1
+        const c = new Float32Array(colors.length);
+        for (let i = 0; i < colors.length; i++) c[i] = colors[i] / 255.0;
+        geometry.setAttribute('color', new THREE.BufferAttribute(c, 3));
+        material = new THREE.PointsMaterial({ size: 0.03, vertexColors: true });
+      } else {
+        material = new THREE.PointsMaterial({ size: 0.03 });
+      }
+
+      const points = new THREE.Points(geometry, material);
+      points.position.set(computeXOffset(idx), 0, -3);
+
+      // Auto-ground the point cloud
+      groundObject3D(points);
+
+      // Add to the A-Frame scene's three.js root
+      sceneEl.object3D.add(points);
+
+      // Track it for clearing
+      loadedEntities.push(points);
+
+      setStatus(`Loaded: ${file.name} (grounded)`);
+    }
+
+    async function handleFiles(fileList){
+      const files = Array.from(fileList || []).filter(isSupported);
+      if (!files.length) {
+        setStatus('No supported files found. Use .glb, .gltf, or .las');
+        return;
+      }
+
+      for (const file of files) {
+        const e = extOf(file.name);
+
+        try {
+          if (e === '.glb' || e === '.gltf') {
+            loadGltfFile(file);
+          } else if (e === '.las') {
+            await loadLasFile(file);
+          }
+        } catch (err) {
+          console.error(err);
+          setStatus(`Failed: ${file.name}`);
+        }
+      }
+    }
+
+    // --- Clear scene
+    function clearScene(){
+      // Remove A-Frame entities we appended OR raw THREE objects we added
+      for (const item of loadedEntities) {
+        if (item instanceof HTMLElement) {
+          item.parentNode?.removeChild(item);
+        } else if (item && item.isObject3D) {
+          sceneEl.object3D.remove(item);
+          // Dispose geometry/material to release GPU memory
+          if (item.geometry) item.geometry.dispose?.();
+          if (item.material) item.material.dispose?.();
+        }
+      }
+      loadedEntities.length = 0;
+      loadIndex = 0;
+      setStatus('Scene cleared.');
+    }
+
+    clearBtn.addEventListener('click', clearScene);
+
+    // --- File input
+    fileInput.addEventListener('change', async (e) => {
+      await handleFiles(e.target.files);
+      fileInput.value = '';
+    });
+
+    // --- Drag & drop
+    window.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+    window.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+    window.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+      await handleFiles(e.dataTransfer.files);
+    });
+
+    setStatus('Ready. Drop or upload .glb/.gltf/.las');
+  </script>
 </body>
 </html>
