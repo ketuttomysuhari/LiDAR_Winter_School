@@ -1,792 +1,870 @@
-```html
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Hybrid LiDAR Analysis (Static vs Dynamic) — HTML Only</title>
+  <title>Local LAS 1.4 Viewer (Static vs Dynamic) - Pure HTML+JS</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-
-  <!-- Import maps: Three.js + loaders.gl via esm.sh (ESM CDN) -->
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://unpkg.com/three@0.158.0/build/three.module.js",
-      "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/",
-      "@loaders.gl/core": "https://esm.sh/@loaders.gl/core@4.0.4",
-      "@loaders.gl/las": "https://esm.sh/@loaders.gl/las@4.0.4"
-    }
-  }
-  </script>
-
   <style>
-    :root{
-      --bg: #0b0f14;
-      --panel: rgba(0,0,0,0.55);
-      --text: rgba(255,255,255,0.9);
-      --muted: rgba(255,255,255,0.7);
-      --border: rgba(255,255,255,0.15);
-    }
-    body { margin:0; overflow:hidden; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;}
-    #topbar{
-      position: fixed; left: 10px; top: 10px; z-index: 20;
-      background: var(--panel); border: 1px solid var(--border);
-      border-radius: 12px; padding: 12px; width: min(560px, calc(100vw - 20px));
+    html, body { margin:0; height:100%; overflow:hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#0b1220; color:#e5e7eb;}
+    #ui {
+      position:absolute; left:12px; top:12px; width:360px; bottom:12px;
+      overflow:auto; padding:12px; border-radius:14px;
+      background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.10);
       backdrop-filter: blur(8px);
     }
-    #topbar h1{ font-size: 14px; margin: 0 0 8px 0; font-weight: 650; }
-    #grid{
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
+    h1 { font-size:14px; margin:0 0 10px; }
+    .card { background:rgba(0,0,0,0.25); border:1px solid rgba(255,255,255,0.10); border-radius:12px; padding:10px; margin:10px 0; }
+    label { font-size:12px; color:#cbd5e1; display:block; margin-top:8px; }
+    input, select, button { width:100%; box-sizing:border-box; }
+    input[type="range"] { width:100%; }
+    .row { display:flex; gap:8px; }
+    .row > * { flex:1; }
+    button {
+      padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.14);
+      background:rgba(255,255,255,0.08); color:#e5e7eb; cursor:pointer;
     }
-    .drop{
-      border: 1px dashed var(--border);
-      border-radius: 12px;
-      padding: 10px;
-      min-height: 92px;
-      display:flex; flex-direction:column; justify-content:space-between;
-    }
-    .drop b{ font-size: 12px; }
-    .drop small{ color: var(--muted); line-height: 1.3; }
-    .row{ display:flex; gap: 10px; flex-wrap:wrap; align-items:center; margin-top: 10px;}
-    button{
-      background: rgba(255,255,255,0.10);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 8px 10px;
-      cursor: pointer;
-    }
-    button:hover{ background: rgba(255,255,255,0.14); }
-    input[type="range"]{ width: 170px; }
-    input[type="checkbox"]{ transform: translateY(1px); }
-    .kpi{
-      margin-top: 10px;
-      border-top: 1px solid var(--border);
-      padding-top: 10px;
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.45;
-    }
-    .kpi code{ color: var(--text); }
-    #profileWrap{
-      position: fixed; left: 10px; bottom: 10px; z-index: 20;
-      background: var(--panel); border: 1px solid var(--border);
-      border-radius: 12px; padding: 10px;
-      backdrop-filter: blur(8px);
-    }
-    #profileTitle{ font-size: 13px; margin-bottom: 6px; color: var(--text); }
-    #profile{ display:block; border-radius: 10px; background:#0f1620; }
-    #legend{ font-size: 12px; color: var(--muted); margin-top: 6px; }
-    .pill{ display:inline-block; padding:2px 8px; border-radius: 999px; margin-right: 6px; border: 1px solid var(--border); }
-    .blue{ background: rgba(0,160,255,0.18); }
-    .red{ background: rgba(255,80,80,0.18); }
-    #toast{
-      position: fixed; right: 10px; top: 10px; z-index: 30;
-      background: rgba(0,0,0,0.7); border: 1px solid var(--border);
-      border-radius: 12px; padding: 10px 12px; max-width: 360px; display:none;
-    }
-    #toast small{ color: var(--muted); }
+    button:hover { background:rgba(255,255,255,0.12); }
+    pre { white-space: pre-wrap; word-break: break-word; font-size:12px; margin:8px 0 0; }
+    #canvasWrap { position:absolute; left:0; top:0; right:0; bottom:0; }
+    #hist { width:100%; height:120px; border-radius:10px; border:1px solid rgba(255,255,255,0.10); background:rgba(0,0,0,0.25); }
+    #status { font-size:12px; color:#9ca3af; margin-top:6px; line-height:1.35; }
   </style>
+
+  <!-- Three.js via UNPKG (no bare imports) -->
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.174.0/build/three.module.js";
+    import { OrbitControls } from "https://unpkg.com/three@0.174.0/examples/jsm/controls/OrbitControls.js";
+
+    // ----------------------------
+    // Minimal LAS reader (LAS 1.2–1.4)
+    // Supports point formats 0–10 for XYZ/intensity/classification, RGB when present.
+    // ----------------------------
+    function readString(view, offset, length){
+      let s = "";
+      for(let i=0;i<length;i++){
+        const c = view.getUint8(offset+i);
+        if(c===0) break;
+        s += String.fromCharCode(c);
+      }
+      return s.trim();
+    }
+
+    function readUInt64LE(view, offset){
+      // JS number precise up to 2^53-1; LAS files typically safe for offsets
+      const lo = view.getUint32(offset, true);
+      const hi = view.getUint32(offset+4, true);
+      return hi * 4294967296 + lo;
+    }
+
+    function parseLASHeader(buffer){
+      const view = new DataView(buffer);
+
+      const fileSig = readString(view, 0, 4);
+      if(fileSig !== "LASF") throw new Error("Not a LAS file (missing LASF signature).");
+
+      const versionMajor = view.getUint8(24);
+      const versionMinor = view.getUint8(25);
+
+      const systemId = readString(view, 26, 32);
+      const generatingSoftware = readString(view, 58, 32);
+
+      const headerSize = view.getUint16(94, true);
+
+      // LAS 1.4: offset_to_point_data at 96 (uint32), num_vlrs at 100 (uint32)
+      const offsetToPointData = view.getUint32(96, true);
+      const numVLRs = view.getUint32(100, true);
+
+      // Point format + record length
+      const pointFormat = view.getUint8(104);
+      const pointRecordLength = view.getUint16(105, true);
+
+      // point count (LAS 1.4 has legacy + EVLR), but we read legacy at 107 (uint32)
+      const legacyPointCount = view.getUint32(107, true);
+
+      // scales & offsets
+      const xScale = view.getFloat64(131, true);
+      const yScale = view.getFloat64(139, true);
+      const zScale = view.getFloat64(147, true);
+
+      const xOffset = view.getFloat64(155, true);
+      const yOffset = view.getFloat64(163, true);
+      const zOffset = view.getFloat64(171, true);
+
+      // bounds
+      const maxX = view.getFloat64(179, true);
+      const minX = view.getFloat64(187, true);
+      const maxY = view.getFloat64(195, true);
+      const minY = view.getFloat64(203, true);
+      const maxZ = view.getFloat64(211, true);
+      const minZ = view.getFloat64(219, true);
+
+      // LAS 1.4 extended point count at offset 247 (uint64) if headerSize >= 375
+      let pointCount = legacyPointCount;
+      if(headerSize >= 375){
+        const extPointCount = readUInt64LE(view, 247);
+        if(extPointCount > 0) pointCount = extPointCount;
+      }
+
+      return {
+        fileSig, versionMajor, versionMinor,
+        systemId, generatingSoftware,
+        headerSize, offsetToPointData, numVLRs,
+        pointFormat, pointRecordLength,
+        pointCount,
+        scale: {xScale, yScale, zScale},
+        offset: {xOffset, yOffset, zOffset},
+        bounds: {minX, maxX, minY, maxY, minZ, maxZ}
+      };
+    }
+
+    function hasRGB(pointFormat){
+      // RGB is in formats 2,3,5,7,8,10 (standard LAS)
+      return [2,3,5,7,8,10].includes(pointFormat);
+    }
+
+    function pointHasGPS(pointFormat){
+      // GPS time common in 1,3,4,5,6,7,8,9,10
+      return [1,3,4,5,6,7,8,9,10].includes(pointFormat);
+    }
+
+    function parsePoints(buffer, header, opts){
+      const view = new DataView(buffer);
+      const {
+        maxPoints = 2_000_000,
+        stride = 1,
+        zMin = -Infinity, zMax = Infinity,
+        useROI = false,
+        roi = null // {minX,maxX,minY,maxY,minZ,maxZ} in REAL coords
+      } = opts;
+
+      const n = Number(header.pointCount);
+      const recLen = header.pointRecordLength;
+      const base = header.offsetToPointData;
+
+      // Sampling to cap memory
+      const step = Math.max(1, stride);
+      const cap = Math.min(maxPoints, Math.ceil(n / step));
+
+      const positions = new Float32Array(cap * 3);
+      const intensities = new Float32Array(cap);
+      const classifications = new Uint16Array(cap);
+      const colors = new Uint8Array(cap * 3);
+
+      const rgb = hasRGB(header.pointFormat);
+
+      let count = 0;
+
+      // Precompute scales/offsets
+      const sx = header.scale.xScale, sy = header.scale.yScale, sz = header.scale.zScale;
+      const ox = header.offset.xOffset, oy = header.offset.yOffset, oz = header.offset.zOffset;
+
+      for(let i=0; i<n; i+=step){
+        const off = base + i * recLen;
+
+        // LAS point record begins with int32 X/Y/Z at 0/4/8
+        const Xi = view.getInt32(off + 0, true);
+        const Yi = view.getInt32(off + 4, true);
+        const Zi = view.getInt32(off + 8, true);
+
+        const X = Xi * sx + ox;
+        const Y = Yi * sy + oy;
+        const Z = Zi * sz + oz;
+
+        if(Z < zMin || Z > zMax) continue;
+
+        if(useROI && roi){
+          if(X < roi.minX || X > roi.maxX || Y < roi.minY || Y > roi.maxY || Z < roi.minZ || Z > roi.maxZ) continue;
+        }
+
+        // intensity: uint16 at offset 12 for all common formats
+        const intensity = view.getUint16(off + 12, true);
+
+        // classification:
+        // For point formats 0–5: classification byte at offset 15
+        // For point formats 6–10: classification at offset 16 (after flags byte at 14, classification at 15? Actually 6–10: 14=flags, 15=classification, 16=user data, 17=scan angle)
+        // We handle robustly by reading both candidates and picking non-zero if possible.
+        let cls = 0;
+        if(header.pointFormat <= 5){
+          cls = view.getUint8(off + 15);
+        }else{
+          cls = view.getUint8(off + 15);
+        }
+
+        // RGB offsets (standard): last 6 bytes of record for RGB (uint16 each)
+        let r=180, g=180, b=180;
+        if(rgb){
+          // Many files store 16-bit RGB; map to 8-bit
+          const rgbOff = off + recLen - 6;
+          const R16 = view.getUint16(rgbOff + 0, true);
+          const G16 = view.getUint16(rgbOff + 2, true);
+          const B16 = view.getUint16(rgbOff + 4, true);
+          r = Math.min(255, (R16 / 256) | 0);
+          g = Math.min(255, (G16 / 256) | 0);
+          b = Math.min(255, (B16 / 256) | 0);
+        }
+
+        const j = count * 3;
+        positions[j+0] = X;
+        positions[j+1] = Y;
+        positions[j+2] = Z;
+
+        intensities[count] = intensity;
+        classifications[count] = cls;
+
+        colors[j+0] = r; colors[j+1] = g; colors[j+2] = b;
+
+        count++;
+        if(count >= cap) break;
+      }
+
+      return {
+        count,
+        positions: positions.subarray(0, count*3),
+        intensities: intensities.subarray(0, count),
+        classifications: classifications.subarray(0, count),
+        colors: colors.subarray(0, count*3),
+      };
+    }
+
+    function computeHistogram(values, minV, maxV, bins=64){
+      const h = new Array(bins).fill(0);
+      const range = maxV - minV;
+      if(range <= 0) return h;
+      for(let i=0;i<values.length;i++){
+        const v = values[i];
+        if(v < minV || v > maxV) continue;
+        const t = (v - minV)/range;
+        const b = Math.max(0, Math.min(bins-1, Math.floor(t * bins)));
+        h[b]++;
+      }
+      return h;
+    }
+
+    function drawHistogram(canvas, hist){
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0,0,w,h);
+      ctx.fillStyle = "rgba(0,0,0,0.25)";
+      ctx.fillRect(0,0,w,h);
+
+      const maxC = Math.max(...hist, 1);
+      const bins = hist.length;
+      const pad = 10;
+      const bw = (w - 2*pad) / bins;
+
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      for(let i=0;i<bins;i++){
+        const barH = (hist[i]/maxC) * (h - 2*pad);
+        const x = pad + i*bw;
+        const y = h - pad - barH;
+        ctx.fillRect(x, y, Math.max(1, bw-1), barH);
+      }
+
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.font = "12px system-ui, Arial";
+      ctx.fillText("Intensity histogram (sampled points)", 10, 16);
+    }
+
+    function colorize(points, mode, params){
+      const { colors, intensities, classifications, positions } = points;
+      const n = points.count;
+
+      const out = new Uint8Array(n*3);
+
+      if(mode === "rgb"){
+        out.set(colors);
+        return out;
+      }
+
+      if(mode === "intensity"){
+        const minI = params.minI ?? 0;
+        const maxI = params.maxI ?? 65535;
+        const range = Math.max(1, maxI - minI);
+        for(let i=0;i<n;i++){
+          const t = Math.max(0, Math.min(1, (intensities[i]-minI)/range));
+          const v = (t*255)|0;
+          out[i*3+0]=v; out[i*3+1]=v; out[i*3+2]=v;
+        }
+        return out;
+      }
+
+      if(mode === "height"){
+        let minZ = params.minZ, maxZ = params.maxZ;
+        if(minZ == null || maxZ == null){
+          // compute from sampled points
+          minZ = Infinity; maxZ = -Infinity;
+          for(let i=0;i<n;i++){
+            const z = positions[i*3+2];
+            if(z<minZ) minZ=z;
+            if(z>maxZ) maxZ=z;
+          }
+        }
+        const range = Math.max(1e-9, maxZ - minZ);
+        for(let i=0;i<n;i++){
+          const z = positions[i*3+2];
+          const t = Math.max(0, Math.min(1, (z-minZ)/range));
+          // simple gradient: blue->cyan->green->yellow->red
+          const r = Math.max(0, Math.min(255, Math.floor(255 * Math.max(0, (t-0.5)*2))));
+          const b = Math.max(0, Math.min(255, Math.floor(255 * Math.max(0, (0.5-t)*2))));
+          const g = 255 - Math.max(r,b);
+          out[i*3+0]=r; out[i*3+1]=g; out[i*3+2]=b;
+        }
+        return out;
+      }
+
+      if(mode === "classification"){
+        // basic LAS classes palette
+        const palette = new Map([
+          [0,[200,200,200]], [1,[220,220,255]], [2,[120,200,120]], [3,[255,220,120]],
+          [4,[255,120,120]], [5,[160,120,200]], [6,[120,120,255]], [7,[255,255,120]],
+          [8,[120,255,255]], [9,[255,120,255]], [10,[255,180,180]]
+        ]);
+        for(let i=0;i<n;i++){
+          const c = classifications[i];
+          const p = palette.get(c) || [180,180,180];
+          out[i*3+0]=p[0]; out[i*3+1]=p[1]; out[i*3+2]=p[2];
+        }
+        return out;
+      }
+
+      out.set(colors);
+      return out;
+    }
+
+    // ----------------------------
+    // Simple voxel-based comparison (density + mean Z difference)
+    // ----------------------------
+    function compareVoxel(staticPts, dynamicPts, voxelSize){
+      // Returns summary statistics (lightweight, no huge maps)
+      const vs = Math.max(0.01, voxelSize);
+
+      // Build voxel map for static: key -> {count, sumZ}
+      const map = new Map();
+      const sp = staticPts.positions;
+      const sn = staticPts.count;
+
+      for(let i=0;i<sn;i++){
+        const x = sp[i*3+0], y = sp[i*3+1], z = sp[i*3+2];
+        const ix = Math.floor(x/vs), iy = Math.floor(y/vs), iz = Math.floor(z/vs);
+        const key = `${ix},${iy},${iz}`;
+        const v = map.get(key);
+        if(v) { v.count++; v.sumZ += z; }
+        else { map.set(key, {count:1, sumZ:z}); }
+      }
+
+      // Compare dynamic
+      const dp = dynamicPts.positions;
+      const dn = dynamicPts.count;
+
+      let overlap = 0;
+      let dynOnly = 0;
+
+      // For Z difference: compare voxel mean Zs where overlap exists (same voxel)
+      let zDiffSum = 0;
+      let zDiffN = 0;
+
+      // density ratio (avg points per occupied voxel)
+      let staticVox = map.size;
+
+      // Build dynamic occupancy quick
+      const dynMap = new Map();
+      for(let i=0;i<dn;i++){
+        const x = dp[i*3+0], y = dp[i*3+1], z = dp[i*3+2];
+        const ix = Math.floor(x/vs), iy = Math.floor(y/vs), iz = Math.floor(z/vs);
+        const key = `${ix},${iy},${iz}`;
+        const v = dynMap.get(key);
+        if(v) { v.count++; v.sumZ += z; }
+        else { dynMap.set(key, {count:1, sumZ:z}); }
+      }
+
+      for(const [key, dv] of dynMap.entries()){
+        const sv = map.get(key);
+        if(sv){
+          overlap++;
+          const sz = sv.sumZ / sv.count;
+          const dz = dv.sumZ / dv.count;
+          zDiffSum += (dz - sz);
+          zDiffN++;
+        }else{
+          dynOnly++;
+        }
+      }
+
+      const staticAvgDensity = sn / Math.max(1, staticVox);
+      const dynamicAvgDensity = dn / Math.max(1, dynMap.size);
+      const meanZDiff = zDiffN ? (zDiffSum / zDiffN) : 0;
+
+      return {
+        voxelSize: vs,
+        static: {sampledPoints: sn, occupiedVoxels: staticVox, avgPtsPerVoxel: staticAvgDensity},
+        dynamic:{sampledPoints: dn, occupiedVoxels: dynMap.size, avgPtsPerVoxel: dynamicAvgDensity},
+        overlapVoxels: overlap,
+        dynamicOnlyVoxels: dynOnly,
+        meanZDiff_dynamic_minus_static: meanZDiff
+      };
+    }
+
+    // ----------------------------
+    // Three.js scene
+    // ----------------------------
+    const canvasWrap = document.getElementById("canvasWrap");
+    const renderer = new THREE.WebGLRenderer({ antialias:true });
+    renderer.setPixelRatio(devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0x0b1220, 1);
+    document.getElementById("canvasWrap").appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0x0b1220, 20, 8000);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1e9);
+    camera.position.set(0, -50, 30);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    // Lights (minimal)
+    const amb = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(amb);
+
+    // Axis helper (optional)
+    const axes = new THREE.AxesHelper(10);
+    scene.add(axes);
+
+    // Layer state
+    const layers = {
+      static: { points: null, data: null, header: null, name: "STATIC" },
+      dynamic:{ points: null, data: null, header: null, name: "DYNAMIC" }
+    };
+
+    function buildPointCloud(layerKey){
+      const layer = layers[layerKey];
+      if(!layer.data) return;
+
+      // Geometry
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute("position", new THREE.BufferAttribute(layer.data.positions, 3));
+
+      // initial colors
+      const mode = document.getElementById("colorMode").value;
+      const minI = Number(document.getElementById("iMin").value);
+      const maxI = Number(document.getElementById("iMax").value);
+      const col = colorize(layer.data, mode, {minI, maxI});
+      geom.setAttribute("color", new THREE.BufferAttribute(col, 3, true));
+
+      geom.computeBoundingBox();
+
+      const mat = new THREE.PointsMaterial({
+        size: Number(document.getElementById("ptSize").value),
+        vertexColors: true,
+        transparent: true,
+        opacity: Number(document.getElementById("opacity").value),
+        depthTest: true
+      });
+
+      const pts = new THREE.Points(geom, mat);
+      pts.name = layer.name;
+
+      // replace old
+      if(layer.points) scene.remove(layer.points);
+      layer.points = pts;
+      scene.add(pts);
+
+      fitView();
+      updateMeta();
+      updateHistogramFor(layerKey);
+    }
+
+    function fitView(){
+      // Fit to whichever is visible and loaded
+      const boxes = [];
+      for(const k of ["static","dynamic"]){
+        const p = layers[k].points;
+        const vis = document.getElementById(k === "static" ? "chkStatic" : "chkDynamic").checked;
+        if(p && vis){
+          const bb = p.geometry.boundingBox;
+          if(bb) boxes.push(bb);
+        }
+      }
+      if(!boxes.length) return;
+
+      const merged = boxes[0].clone();
+      for(let i=1;i<boxes.length;i++) merged.union(boxes[i]);
+
+      const center = new THREE.Vector3();
+      merged.getCenter(center);
+
+      const size = new THREE.Vector3();
+      merged.getSize(size);
+      const radius = Math.max(size.x, size.y, size.z) * 0.6;
+
+      controls.target.copy(center);
+      camera.position.copy(center.clone().add(new THREE.Vector3(0, -radius*1.8, radius*0.9)));
+      controls.update();
+    }
+
+    function applyStyleToLayer(layerKey){
+      const layer = layers[layerKey];
+      if(!layer.points) return;
+
+      layer.points.material.size = Number(document.getElementById("ptSize").value);
+      layer.points.material.opacity = Number(document.getElementById("opacity").value);
+
+      // recolor
+      const mode = document.getElementById("colorMode").value;
+      const minI = Number(document.getElementById("iMin").value);
+      const maxI = Number(document.getElementById("iMax").value);
+
+      const col = colorize(layer.data, mode, {minI, maxI});
+      const attr = layer.points.geometry.getAttribute("color");
+      if(attr && attr.array.length === col.length){
+        attr.array.set(col);
+        attr.needsUpdate = true;
+      }
+
+      // classification filter (optional, hide non-selected by alpha trick not available with PointsMaterial easily)
+      // We do "hard filter" by rebuilding geometry if filter is set.
+    }
+
+    function setVisibility(){
+      if(layers.static.points) layers.static.points.visible = document.getElementById("chkStatic").checked;
+      if(layers.dynamic.points) layers.dynamic.points.visible = document.getElementById("chkDynamic").checked;
+    }
+
+    function updateMeta(){
+      const meta = {};
+      for(const k of ["static","dynamic"]){
+        const h = layers[k].header;
+        const d = layers[k].data;
+        meta[k] = h ? {
+          version: `${h.versionMajor}.${h.versionMinor}`,
+          pointFormat: h.pointFormat,
+          pointRecordLength: h.pointRecordLength,
+          pointCount_in_file: h.pointCount,
+          points_loaded_sampled: d?.count ?? 0,
+          scale: h.scale,
+          offset: h.offset,
+          bounds: h.bounds,
+          systemId: h.systemId,
+          generatingSoftware: h.generatingSoftware
+        } : "(not loaded)";
+      }
+      document.getElementById("meta").textContent = JSON.stringify(meta, null, 2);
+    }
+
+    function updateHistogramFor(layerKey){
+      const layer = layers[layerKey];
+      if(!layer.data) return;
+
+      const minI = Number(document.getElementById("iMin").value);
+      const maxI = Number(document.getElementById("iMax").value);
+      const hist = computeHistogram(layer.data.intensities, minI, maxI, 64);
+
+      const canvas = document.getElementById("hist");
+      // Ensure proper resolution
+      const cssW = canvas.clientWidth, cssH = canvas.clientHeight;
+      const dpr = devicePixelRatio || 1;
+      canvas.width = Math.floor(cssW * dpr);
+      canvas.height = Math.floor(cssH * dpr);
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+
+      drawHistogram(canvas, hist);
+    }
+
+    async function loadLASFile(file, layerKey){
+      const status = document.getElementById("status");
+      status.textContent = `Loading ${layerKey.toUpperCase()} ...`;
+
+      const buf = await file.arrayBuffer();
+      const header = parseLASHeader(buf);
+
+      // Sampling controls
+      const maxPoints = Number(document.getElementById("maxPoints").value);
+      const stride = Number(document.getElementById("stride").value);
+
+      // Optional Z filter
+      const zMin = Number(document.getElementById("zMin").value);
+      const zMax = Number(document.getElementById("zMax").value);
+
+      // Classification filter (hard filter)
+      const clsText = document.getElementById("classList").value.trim();
+      const want = clsText ? new Set(clsText.split(",").map(s => parseInt(s.trim(),10)).filter(n => Number.isFinite(n))) : null;
+
+      // Parse points (sampled)
+      const pts = parsePoints(buf, header, {maxPoints, stride, zMin, zMax});
+
+      // If classification filter set: rebuild arrays filtered
+      let data = pts;
+      if(want){
+        const n = pts.count;
+        const keepIdx = [];
+        for(let i=0;i<n;i++){
+          if(want.has(pts.classifications[i])) keepIdx.push(i);
+        }
+        const m = keepIdx.length;
+        const pos = new Float32Array(m*3);
+        const inten = new Float32Array(m);
+        const cls = new Uint16Array(m);
+        const col = new Uint8Array(m*3);
+        for(let j=0;j<m;j++){
+          const i = keepIdx[j];
+          pos[j*3+0]=pts.positions[i*3+0];
+          pos[j*3+1]=pts.positions[i*3+1];
+          pos[j*3+2]=pts.positions[i*3+2];
+          inten[j]=pts.intensities[i];
+          cls[j]=pts.classifications[i];
+          col[j*3+0]=pts.colors[i*3+0];
+          col[j*3+1]=pts.colors[i*3+1];
+          col[j*3+2]=pts.colors[i*3+2];
+        }
+        data = {count:m, positions:pos, intensities:inten, classifications:cls, colors:col};
+      }
+
+      layers[layerKey].header = header;
+      layers[layerKey].data = data;
+
+      buildPointCloud(layerKey);
+
+      status.textContent =
+        `${layerKey.toUpperCase()} loaded: sampled ${data.count.toLocaleString()} points (from file count ${Number(header.pointCount).toLocaleString()}).`;
+    }
+
+    // Cross section (simple): keep points within Z band around a plane Z = z0
+    function applyCrossSection(){
+      const enabled = document.getElementById("crossEnable").checked;
+      const z0 = Number(document.getElementById("crossZ").value);
+      const half = Number(document.getElementById("crossHalf").value);
+
+      const active = document.getElementById("activeLayer").value;
+      const layer = layers[active];
+      if(!layer.header) return;
+
+      // If disabled: reload style only (no rebuild)
+      if(!enabled){
+        buildPointCloud(active);
+        return;
+      }
+
+      // Filter from original sampled data currently in layer.data (note: if already filtered, re-filter)
+      const src = layer.data;
+      const n = src.count;
+
+      const keep = [];
+      for(let i=0;i<n;i++){
+        const z = src.positions[i*3+2];
+        if(Math.abs(z - z0) <= half) keep.push(i);
+      }
+
+      const m = keep.length;
+      const pos = new Float32Array(m*3);
+      const inten = new Float32Array(m);
+      const cls = new Uint16Array(m);
+      const col = new Uint8Array(m*3);
+
+      for(let j=0;j<m;j++){
+        const i = keep[j];
+        pos[j*3+0]=src.positions[i*3+0];
+        pos[j*3+1]=src.positions[i*3+1];
+        pos[j*3+2]=src.positions[i*3+2];
+        inten[j]=src.intensities[i];
+        cls[j]=src.classifications[i];
+        col[j*3+0]=src.colors[i*3+0];
+        col[j*3+1]=src.colors[i*3+1];
+        col[j*3+2]=src.colors[i*3+2];
+      }
+
+      layers[active].data = {count:m, positions:pos, intensities:inten, classifications:cls, colors:col};
+      buildPointCloud(active);
+    }
+
+    function runCompare(){
+      const s = layers.static.data;
+      const d = layers.dynamic.data;
+      if(!s || !d){
+        alert("Load BOTH static and dynamic first.");
+        return;
+      }
+      const voxel = Number(document.getElementById("voxel").value);
+      const res = compareVoxel(s, d, voxel);
+      document.getElementById("compareOut").textContent = JSON.stringify(res, null, 2);
+    }
+
+    // ----------------------------
+    // UI wiring
+    // ----------------------------
+    function bindUI(){
+      // file loaders
+      document.getElementById("fileStatic").addEventListener("change", (e)=>{
+        const f = e.target.files?.[0];
+        if(f) loadLASFile(f, "static").catch(err => alert(err.message));
+      });
+      document.getElementById("fileDynamic").addEventListener("change", (e)=>{
+        const f = e.target.files?.[0];
+        if(f) loadLASFile(f, "dynamic").catch(err => alert(err.message));
+      });
+
+      // style controls
+      ["ptSize","opacity","colorMode","iMin","iMax"].forEach(id=>{
+        document.getElementById(id).addEventListener("input", ()=>{
+          const active = document.getElementById("activeLayer").value;
+          if(layers[active].points) applyStyleToLayer(active);
+          updateHistogramFor(active);
+        });
+      });
+
+      // visibility
+      ["chkStatic","chkDynamic"].forEach(id=>{
+        document.getElementById(id).addEventListener("change", ()=>{ setVisibility(); });
+      });
+
+      document.getElementById("btnRebuild").addEventListener("click", ()=>{
+        // Re-parse needed for stride/maxPoints/class filter/z-range changes
+        alert("Untuk perubahan stride/maxPoints/z-range/class filter, klik Load ulang file (pilih file lagi).");
+      });
+
+      document.getElementById("btnFit").addEventListener("click", ()=>fitView());
+      document.getElementById("btnHist").addEventListener("click", ()=>{
+        const active = document.getElementById("activeLayer").value;
+        updateHistogramFor(active);
+      });
+
+      // cross section
+      ["crossEnable","crossZ","crossHalf"].forEach(id=>{
+        document.getElementById(id).addEventListener("input", ()=>applyCrossSection());
+      });
+
+      // compare
+      document.getElementById("btnCompare").addEventListener("click", ()=>runCompare());
+    }
+
+    // ----------------------------
+    // Animation loop
+    // ----------------------------
+    function animate(){
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    window.addEventListener("resize", ()=>{
+      camera.aspect = window.innerWidth/window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // init UI after DOM exists
+    window.addEventListener("DOMContentLoaded", ()=>{
+      bindUI();
+      animate();
+      document.getElementById("status").textContent =
+        "Ready. Load STATIC and/or DYNAMIC LAS 1.4. Gunakan sampling (stride/maxPoints) untuk file besar.";
+    });
+
+    // expose for debugging if needed
+    window.__LAS_VIEWER__ = { layers };
+  </script>
 </head>
 
 <body>
-  <div id="topbar">
-    <h1>Hybrid LiDAR Analysis — Static (Blue) vs Dynamic (Red)</h1>
+  <div id="canvasWrap"></div>
 
-    <div id="grid">
-      <div class="drop" id="dropStatic">
-        <div>
-          <b>STATIC (TLS / reference)</b><br/>
-          <small>Drag & drop <code>.las</code> / <code>.laz</code> here, or choose file.</small>
-        </div>
-        <div class="row">
-          <input type="file" id="fileStatic" accept=".las,.laz" />
-        </div>
+  <div id="ui">
+    <h1>Local LAS 1.4 Viewer (No Cesium, No Potree)</h1>
+
+    <div class="card">
+      <label>Load STATIC (.las)</label>
+      <input type="file" id="fileStatic" accept=".las" />
+
+      <label style="margin-top:10px;">Load DYNAMIC (.las)</label>
+      <input type="file" id="fileDynamic" accept=".las" />
+
+      <div id="status"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <label><input type="checkbox" id="chkStatic" checked /> Show STATIC</label>
+        <label><input type="checkbox" id="chkDynamic" checked /> Show DYNAMIC</label>
       </div>
 
-      <div class="drop" id="dropDynamic">
-        <div>
-          <b>DYNAMIC (mobile / kinematic)</b><br/>
-          <small>Drag & drop <code>.las</code> / <code>.laz</code> here, or choose file.</small>
-        </div>
-        <div class="row">
-          <input type="file" id="fileDynamic" accept=".las,.laz" />
-        </div>
+      <label>Active layer (for controls)</label>
+      <select id="activeLayer">
+        <option value="static">STATIC</option>
+        <option value="dynamic">DYNAMIC</option>
+      </select>
+
+      <label>Point size</label>
+      <input type="range" id="ptSize" min="0.5" max="10" step="0.1" value="2" />
+
+      <label>Opacity</label>
+      <input type="range" id="opacity" min="0.05" max="1" step="0.01" value="1" />
+
+      <button id="btnFit">Fit View</button>
+    </div>
+
+    <div class="card">
+      <label>Sampling: max points loaded (per layer)</label>
+      <input type="number" id="maxPoints" value="2000000" min="10000" step="10000" />
+
+      <label>Sampling stride (1 = every point, 10 = take 1 of 10)</label>
+      <input type="number" id="stride" value="5" min="1" step="1" />
+
+      <label>Z filter (optional) - Min / Max</label>
+      <div class="row">
+        <input type="number" id="zMin" value="-1e20" />
+        <input type="number" id="zMax" value="1e20" />
+      </div>
+
+      <label>Classification filter (comma-separated). Example: 2,5,6</label>
+      <input type="text" id="classList" placeholder="empty = no filter" />
+
+      <button id="btnRebuild">Note: For stride/maxPoints/z/class changes, re-load file</button>
+    </div>
+
+    <div class="card">
+      <label>Color mode</label>
+      <select id="colorMode">
+        <option value="rgb">RGB (if exists)</option>
+        <option value="intensity">Intensity</option>
+        <option value="classification">Classification</option>
+        <option value="height">Height (Z)</option>
+      </select>
+
+      <label>Intensity range</label>
+      <div class="row">
+        <input type="number" id="iMin" value="0" />
+        <input type="number" id="iMax" value="65535" />
+      </div>
+
+      <label>Histogram (Intensity)</label>
+      <canvas id="hist"></canvas>
+      <button id="btnHist">Update Histogram</button>
+    </div>
+
+    <div class="card">
+      <label><input type="checkbox" id="crossEnable" /> Cross section by Z band (simple)</label>
+      <label>Center Z</label>
+      <input type="number" id="crossZ" value="0" step="0.1" />
+      <label>Half thickness (meters)</label>
+      <input type="number" id="crossHalf" value="0.25" step="0.05" />
+      <div style="font-size:12px; color:#9ca3af; margin-top:6px;">
+        Ini cross section sederhana berbasis Z-band. Untuk profil sepanjang garis (2-click), bisa ditambah setelah workflow ini stabil.
       </div>
     </div>
 
-    <div class="row">
-      <span style="font-size:12px;color:var(--muted)">Section width (m)</span>
-      <input id="sectionWidth" type="range" min="0.02" max="2.0" step="0.02" value="0.30">
-      <span id="sectionWidthVal" style="font-size:12px;color:var(--text)">0.30</span>
-
-      <span style="font-size:12px;color:var(--muted)">Downsample (voxel, m)</span>
-      <input id="voxel" type="range" min="0.02" max="0.50" step="0.01" value="0.08">
-      <span id="voxelVal" style="font-size:12px;color:var(--text)">0.08</span>
+    <div class="card">
+      <label>Compare STATIC vs DYNAMIC (voxel analysis)</label>
+      <label>Voxel size (m)</label>
+      <input type="number" id="voxel" value="0.2" step="0.05" />
+      <button id="btnCompare">Run Compare</button>
+      <pre id="compareOut"></pre>
     </div>
 
-    <!-- LAYERS -->
-    <div class="row" style="margin-top:8px;">
-      <label style="font-size:12px;color:var(--muted); display:flex; gap:8px; align-items:center;">
-        <input type="checkbox" id="showStatic" checked>
-        Show STATIC (Blue)
-      </label>
-
-      <label style="font-size:12px;color:var(--muted); display:flex; gap:8px; align-items:center;">
-        <input type="checkbox" id="showDynamic" checked>
-        Show DYNAMIC (Red)
-      </label>
-
-      <button id="resetColors">Reset colors</button>
-    </div>
-
-    <div class="row">
-      <button id="resetSection">Reset section</button>
-      <button id="recalcError">Recompute error</button>
-      <button id="clearAll">Clear all</button>
-    </div>
-
-    <div class="kpi" id="kpi">
-      <div><small>How to use:</small></div>
-      <div>1) Load both datasets. 2) Click 2 points in 3D to define cross section (A → B). 3) Profile + error metrics will update.</div>
-      <div style="margin-top:6px;"><small>Status:</small> <span id="status">Waiting for uploads…</span></div>
-      <div style="margin-top:6px;"><small>Error metrics (Dynamic → Static, approx NN):</small></div>
-      <div id="errOut">Not computed.</div>
+    <div class="card">
+      <label>Metadata</label>
+      <pre id="meta"></pre>
     </div>
   </div>
-
-  <div id="profileWrap">
-    <div id="profileTitle">Profile / Cross Section</div>
-    <canvas id="profile" width="560" height="240"></canvas>
-    <div id="legend">
-      <span class="pill blue">Static</span>
-      <span class="pill red">Dynamic</span>
-      <span style="opacity:.9;">X = along-section distance, Y = elevation</span>
-    </div>
-  </div>
-
-  <div id="toast"></div>
-
-<script type="module">
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { load } from '@loaders.gl/core';
-import { LASLoader } from '@loaders.gl/las';
-
-const statusEl = document.getElementById('status');
-const errOutEl = document.getElementById('errOut');
-const toastEl = document.getElementById('toast');
-
-function toast(msg, detail=""){
-  toastEl.style.display = "block";
-  toastEl.innerHTML = `<div style="font-size:13px;margin-bottom:2px">${msg}</div>` + (detail ? `<small>${detail}</small>` : "");
-  setTimeout(()=>toastEl.style.display="none", 3500);
-}
-
-// ---------- THREE.JS SCENE ----------
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b0f14);
-
-const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.05, 5000);
-camera.position.set(15, 10, 15);
-
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(innerWidth, innerHeight);
-document.body.appendChild(renderer.domElement);
-
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-
-scene.add(new THREE.GridHelper(60, 60));
-scene.add(new THREE.AxesHelper(2));
-
-window.addEventListener('resize', () => {
-  camera.aspect = innerWidth/innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-});
-
-// ---------- UI ----------
-const sectionWidth = document.getElementById('sectionWidth');
-const sectionWidthVal = document.getElementById('sectionWidthVal');
-sectionWidthVal.textContent = (+sectionWidth.value).toFixed(2);
-
-const voxel = document.getElementById('voxel');
-const voxelVal = document.getElementById('voxelVal');
-voxelVal.textContent = (+voxel.value).toFixed(2);
-
-sectionWidth.addEventListener('input', () => {
-  sectionWidthVal.textContent = (+sectionWidth.value).toFixed(2);
-  if (A && B) drawProfile();
-});
-voxel.addEventListener('input', () => {
-  voxelVal.textContent = (+voxel.value).toFixed(2);
-});
-
-// ---------- LAYER TOGGLES ----------
-const showStaticEl = document.getElementById('showStatic');
-const showDynamicEl = document.getElementById('showDynamic');
-const resetColorsBtn = document.getElementById('resetColors');
-
-// ---------- DATA STORAGE ----------
-let staticData = null;   // {positions, intensity, classification}
-let dynamicData = null;
-
-let staticPointsObj = null;
-let dynamicPointsObj = null;
-
-// ---------- UTIL: recolor ----------
-function recolor(pointsObj, hex){
-  if (!pointsObj) return;
-  const geom = pointsObj.geometry;
-  const posAttr = geom.getAttribute('position');
-  const n = posAttr.count;
-
-  let colAttr = geom.getAttribute('color');
-  if (!colAttr) {
-    colAttr = new THREE.BufferAttribute(new Float32Array(n * 3), 3);
-    geom.setAttribute('color', colAttr);
-  }
-  const c = new THREE.Color(hex);
-  for (let i = 0; i < n; i++) colAttr.setXYZ(i, c.r, c.g, c.b);
-  colAttr.needsUpdate = true;
-}
-
-function applyLayerVisibility(){
-  const sOn = !!showStaticEl.checked;
-  const dOn = !!showDynamicEl.checked;
-
-  if (staticPointsObj)  staticPointsObj.visible  = sOn;
-  if (dynamicPointsObj) dynamicPointsObj.visible = dOn;
-
-  // Emphasis coloring (optional but useful)
-  if (staticPointsObj && dynamicPointsObj) {
-    if (sOn && !dOn) recolor(staticPointsObj, 0x40c4ff);
-    if (dOn && !sOn) recolor(dynamicPointsObj, 0xff7070);
-    if (sOn && dOn) {
-      recolor(staticPointsObj, 0x00a0ff);
-      recolor(dynamicPointsObj, 0xff5050);
-    }
-  }
-}
-
-showStaticEl.addEventListener('change', ()=>{
-  applyLayerVisibility();
-  if (A && B) drawProfile(); // profile follows active layers
-});
-showDynamicEl.addEventListener('change', ()=>{
-  applyLayerVisibility();
-  if (A && B) drawProfile();
-});
-
-resetColorsBtn.addEventListener('click', () => {
-  recolor(staticPointsObj, 0x00a0ff);
-  recolor(dynamicPointsObj, 0xff5050);
-  toast("Colors reset", "Static=Blue, Dynamic=Red");
-});
-
-// ---------- BASIC DOWNSAMPLE (voxel grid) ----------
-function voxelDownsample(positions, attrs, voxelSize){
-  const n = positions.length / 3;
-  const map = new Map();
-  const keepIdx = [];
-
-  for (let i = 0; i < n; i++) {
-    const x = positions[i*3], y = positions[i*3+1], z = positions[i*3+2];
-    const kx = Math.floor(x / voxelSize);
-    const ky = Math.floor(y / voxelSize);
-    const kz = Math.floor(z / voxelSize);
-    const key = `${kx},${ky},${kz}`;
-    if (!map.has(key)) {
-      map.set(key, i);
-      keepIdx.push(i);
-    }
-  }
-
-  const m = keepIdx.length;
-  const outPos = new Float32Array(m*3);
-
-  const outAttrs = {};
-  if (attrs) {
-    for (const [name, arr] of Object.entries(attrs)) {
-      if (!arr) continue;
-      outAttrs[name] = (arr instanceof Float32Array) ? new Float32Array(m)
-                    : (arr instanceof Uint16Array) ? new Uint16Array(m)
-                    : (arr instanceof Uint8Array)  ? new Uint8Array(m)
-                    : new Float32Array(m);
-    }
-  }
-
-  for (let j = 0; j < m; j++) {
-    const i = keepIdx[j];
-    outPos[j*3] = positions[i*3];
-    outPos[j*3+1] = positions[i*3+1];
-    outPos[j*3+2] = positions[i*3+2];
-
-    if (attrs) {
-      for (const [name, arr] of Object.entries(attrs)) {
-        if (!arr) continue;
-        outAttrs[name][j] = arr[i];
-      }
-    }
-  }
-
-  return { positions: outPos, attrs: outAttrs, count: m };
-}
-
-// ---------- LOAD LAS/LAZ ----------
-async function readLAS(file){
-  statusEl.textContent = `Loading ${file.name} …`;
-  const arrayBuffer = await file.arrayBuffer();
-
-  const data = await load(arrayBuffer, LASLoader, {});
-  const attrs = data?.attributes || {};
-  const pos = attrs.POSITION?.value || attrs.position?.value;
-  if (!pos) throw new Error("LAS parsed but POSITION attribute not found.");
-
-  const positions = (pos instanceof Float32Array) ? pos : new Float32Array(pos);
-
-  const intensity = attrs.INTENSITY?.value || attrs.intensity?.value || null;
-  const classification = attrs.CLASSIFICATION?.value || attrs.classification?.value || null;
-
-  return {
-    positions,
-    intensity: intensity ? (intensity instanceof Float32Array ? intensity : new Float32Array(intensity)) : null,
-    classification: classification ? (classification instanceof Uint8Array ? classification : new Uint8Array(classification)) : null
-  };
-}
-
-function buildPointsObject(dataset, rgb, name){
-  const { positions } = dataset;
-  const n = positions.length / 3;
-
-  const colors = new Float32Array(n*3);
-  for (let i=0;i<n;i++){
-    colors[i*3] = rgb.r; colors[i*3+1] = rgb.g; colors[i*3+2] = rgb.b;
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-  if (dataset.intensity) geometry.setAttribute('intensity', new THREE.BufferAttribute(dataset.intensity, 1));
-  if (dataset.classification) geometry.setAttribute('classification', new THREE.BufferAttribute(dataset.classification, 1));
-
-  const material = new THREE.PointsMaterial({
-    size: 0.04,
-    vertexColors: true,
-    sizeAttenuation: true
-  });
-
-  const pts = new THREE.Points(geometry, material);
-  pts.name = name;
-  return pts;
-}
-
-function centerToDatasets(){
-  const group = new THREE.Group();
-  if (staticPointsObj) group.add(staticPointsObj.clone());
-  if (dynamicPointsObj) group.add(dynamicPointsObj.clone());
-
-  const box = new THREE.Box3().setFromObject(group);
-  if (box.isEmpty()) return;
-
-  const center = box.getCenter(new THREE.Vector3());
-  const size = box.getSize(new THREE.Vector3());
-  const radius = Math.max(size.x, size.y, size.z) * 0.6;
-
-  controls.target.copy(center);
-  camera.position.copy(center).add(new THREE.Vector3(radius, radius*0.7, radius));
-  controls.update();
-}
-
-async function loadStatic(file){
-  try{
-    const raw = await readLAS(file);
-    const v = parseFloat(voxel.value);
-    const ds = voxelDownsample(raw.positions, {
-      intensity: raw.intensity,
-      classification: raw.classification
-    }, v);
-
-    staticData = {
-      positions: ds.positions,
-      intensity: ds.attrs.intensity || null,
-      classification: ds.attrs.classification || null
-    };
-
-    if (staticPointsObj) scene.remove(staticPointsObj);
-    staticPointsObj = buildPointsObject(staticData, new THREE.Color(0.0, 0.65, 1.0), "static");
-    scene.add(staticPointsObj);
-
-    statusEl.textContent = `Static loaded: ${staticData.positions.length/3} pts (voxel=${v} m)`;
-    toast("Static loaded", file.name);
-
-    applyLayerVisibility();
-    centerToDatasets();
-    if (A && B) { drawProfile(); computeError(); }
-  }catch(e){
-    console.error(e);
-    toast("Failed to load STATIC", e.message || String(e));
-    statusEl.textContent = `Static load failed.`;
-  }
-}
-
-async function loadDynamic(file){
-  try{
-    const raw = await readLAS(file);
-    const v = parseFloat(voxel.value);
-    const ds = voxelDownsample(raw.positions, {
-      intensity: raw.intensity,
-      classification: raw.classification
-    }, v);
-
-    dynamicData = {
-      positions: ds.positions,
-      intensity: ds.attrs.intensity || null,
-      classification: ds.attrs.classification || null
-    };
-
-    if (dynamicPointsObj) scene.remove(dynamicPointsObj);
-    dynamicPointsObj = buildPointsObject(dynamicData, new THREE.Color(1.0, 0.28, 0.28), "dynamic");
-    scene.add(dynamicPointsObj);
-
-    statusEl.textContent = `Dynamic loaded: ${dynamicData.positions.length/3} pts (voxel=${v} m)`;
-    toast("Dynamic loaded", file.name);
-
-    applyLayerVisibility();
-    centerToDatasets();
-    if (A && B) { drawProfile(); computeError(); }
-  }catch(e){
-    console.error(e);
-    toast("Failed to load DYNAMIC", e.message || String(e));
-    statusEl.textContent = `Dynamic load failed.`;
-  }
-}
-
-// ---------- Drag & Drop ----------
-function wireDrop(dropEl, fileInput, loaderFn){
-  dropEl.addEventListener('dragover', (e)=>{ e.preventDefault(); dropEl.style.borderColor = 'rgba(255,255,255,0.35)'; });
-  dropEl.addEventListener('dragleave', ()=>{ dropEl.style.borderColor = 'rgba(255,255,255,0.15)'; });
-  dropEl.addEventListener('drop', (e)=>{
-    e.preventDefault();
-    dropEl.style.borderColor = 'rgba(255,255,255,0.15)';
-    const f = e.dataTransfer.files?.[0];
-    if (!f) return;
-    loaderFn(f);
-  });
-  fileInput.addEventListener('change', ()=>{
-    const f = fileInput.files?.[0];
-    if (!f) return;
-    loaderFn(f);
-  });
-}
-
-wireDrop(document.getElementById('dropStatic'), document.getElementById('fileStatic'), loadStatic);
-wireDrop(document.getElementById('dropDynamic'), document.getElementById('fileDynamic'), loadDynamic);
-
-// ---------- Cross Section (A->B via click pick) ----------
-const raycaster = new THREE.Raycaster();
-raycaster.params.Points.threshold = 0.15;
-const mouse = new THREE.Vector2();
-
-let A = null, B = null;
-const markerGeom = new THREE.SphereGeometry(0.09, 18, 18);
-let markerA = null, markerB = null;
-let sectionLine = null;
-
-function setMarker(which, pos){
-  const mat = new THREE.MeshBasicMaterial({ color: which === "A" ? 0x00ffd0 : 0xffcc00 });
-  const m = new THREE.Mesh(markerGeom, mat);
-  m.position.copy(pos);
-  scene.add(m);
-  return m;
-}
-
-function updateLine(){
-  if (sectionLine) scene.remove(sectionLine);
-  if (!A || !B) return;
-  const geom = new THREE.BufferGeometry().setFromPoints([A, B]);
-  const mat = new THREE.LineBasicMaterial({ color: 0xffffff });
-  sectionLine = new THREE.Line(geom, mat);
-  scene.add(sectionLine);
-}
-
-function pickPoint(evt){
-  const rect = renderer.domElement.getBoundingClientRect();
-  mouse.x = ((evt.clientX - rect.left) / rect.width) * 2 - 1;
-  mouse.y = -(((evt.clientY - rect.top) / rect.height) * 2 - 1);
-
-  raycaster.setFromCamera(mouse, camera);
-
-  const objs = [];
-  if (staticPointsObj && staticPointsObj.visible) objs.push(staticPointsObj);
-  if (dynamicPointsObj && dynamicPointsObj.visible) objs.push(dynamicPointsObj);
-
-  const hits = raycaster.intersectObjects(objs, false);
-  if (!hits.length) return null;
-  return hits[0].point.clone();
-}
-
-renderer.domElement.addEventListener('click', (e)=>{
-  const p = pickPoint(e);
-  if (!p) return;
-
-  if (!A){
-    A = p;
-    if (markerA) scene.remove(markerA);
-    markerA = setMarker("A", A);
-    toast("Section point A set", `A = (${A.x.toFixed(2)}, ${A.y.toFixed(2)}, ${A.z.toFixed(2)})`);
-  } else if (!B){
-    B = p;
-    if (markerB) scene.remove(markerB);
-    markerB = setMarker("B", B);
-    updateLine();
-    toast("Section point B set", `B = (${B.x.toFixed(2)}, ${B.y.toFixed(2)}, ${B.z.toFixed(2)})`);
-    drawProfile();
-    computeError();
-  } else {
-    A = p; B = null;
-    if (markerA) scene.remove(markerA);
-    if (markerB) scene.remove(markerB);
-    markerA = setMarker("A", A);
-    markerB = null;
-    if (sectionLine) scene.remove(sectionLine);
-    sectionLine = null;
-    clearProfile("Click a second point to complete section (A → B).");
-  }
-});
-
-// ---------- Profile Canvas ----------
-const canvas = document.getElementById('profile');
-const ctx = canvas.getContext('2d');
-
-function clearProfile(msg="Load datasets, then click 2 points for section (A → B)."){
-  ctx.fillStyle = '#0f1620';
-  ctx.fillRect(0,0,canvas.width,canvas.height);
-  ctx.fillStyle = 'rgba(255,255,255,0.8)';
-  ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Arial';
-  ctx.fillText(msg, 12, 22);
-}
-clearProfile();
-
-function extractSectionPoints(positions, A, B, width){
-  const dir = new THREE.Vector3().subVectors(B, A);
-  const L = dir.length();
-  if (L < 1e-9) return { pts: [], L: 0 };
-  dir.normalize();
-
-  const halfW = width/2;
-  const pts = [];
-  const tmp = new THREE.Vector3();
-
-  for (let i=0; i<positions.length; i+=3){
-    tmp.set(positions[i], positions[i+1], positions[i+2]);
-
-    const ap = tmp.clone().sub(A);
-    const t = ap.dot(dir);
-    if (t < 0 || t > L) continue;
-
-    const closest = A.clone().addScaledVector(dir, t);
-    const d = tmp.distanceTo(closest);
-    if (d > halfW) continue;
-
-    pts.push({ x: t, y: tmp.y });
-  }
-  return { pts, L };
-}
-
-function drawAxes(xMin,xMax,yMin,yMax){
-  ctx.fillStyle = '#0f1620';
-  ctx.fillRect(0,0,canvas.width,canvas.height);
-
-  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-  ctx.strokeRect(44, 18, canvas.width-60, canvas.height-52);
-
-  ctx.fillStyle = 'rgba(255,255,255,0.75)';
-  ctx.font = '11px system-ui, -apple-system, Segoe UI, Roboto, Arial';
-  ctx.fillText(`X (m): ${xMin.toFixed(2)} — ${xMax.toFixed(2)}`, 44, canvas.height-14);
-
-  ctx.save();
-  ctx.translate(14, canvas.height/2);
-  ctx.rotate(-Math.PI/2);
-  ctx.fillText(`Y Elev (m): ${yMin.toFixed(2)} — ${yMax.toFixed(2)}`, 0, 0);
-  ctx.restore();
-}
-
-function drawProfile(){
-  if (!A || !B) return;
-  const w = parseFloat(sectionWidth.value);
-
-  const sOn = !!showStaticEl.checked;
-  const dOn = !!showDynamicEl.checked;
-
-  const s = (staticData && sOn) ? extractSectionPoints(staticData.positions, A, B, w) : {pts:[], L:0};
-  const d = (dynamicData && dOn) ? extractSectionPoints(dynamicData.positions, A, B, w) : {pts:[], L:0};
-
-  const all = s.pts.concat(d.pts);
-  if (!all.length) {
-    clearProfile("No points inside section width (for active layers). Increase width or choose another line.");
-    return;
-  }
-
-  const xMin = 0;
-  const xMax = Math.max(s.L, d.L) || (A.distanceTo(B));
-  let yMin = Infinity, yMax = -Infinity;
-  for (const p of all){ yMin = Math.min(yMin, p.y); yMax = Math.max(yMax, p.y); }
-  const pad = (yMax-yMin)*0.05 || 0.2;
-  yMin -= pad; yMax += pad;
-
-  drawAxes(xMin,xMax,yMin,yMax);
-
-  const x0=44, y0=18, W=canvas.width-60, H=canvas.height-52;
-  const sx = (x)=> x0 + ((x-xMin)/(xMax-xMin))*W;
-  const sy = (y)=> y0 + (1-((y-yMin)/(yMax-yMin)))*H;
-
-  function drawPts(arr, rgba){
-    ctx.fillStyle = rgba;
-    for (let i=0;i<arr.length;i++){
-      const px = sx(arr[i].x);
-      const py = sy(arr[i].y);
-      ctx.fillRect(px, py, 1.2, 1.2);
-    }
-  }
-  if (sOn) drawPts(s.pts, 'rgba(0,160,255,0.70)');
-  if (dOn) drawPts(d.pts, 'rgba(255,80,80,0.70)');
-
-  ctx.fillStyle = 'rgba(255,255,255,0.85)';
-  ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Arial';
-  ctx.fillText(`Width=${w.toFixed(2)}m | Static=${s.pts.length} | Dynamic=${d.pts.length}`, 44, 12);
-}
-
-// ---------- Error estimation (Dynamic -> Static, approximate nearest neighbor) ----------
-function computeError(){
-  if (!staticData || !dynamicData){
-    errOutEl.textContent = "Load both datasets first.";
-    return;
-  }
-  if (!showStaticEl.checked || !showDynamicEl.checked){
-    errOutEl.textContent = "Enable both layers to compute error (Dynamic → Static).";
-    return;
-  }
-
-  statusEl.textContent = "Computing error (approx NN)…";
-
-  const sPos = staticData.positions;
-  const dPos = dynamicData.positions;
-
-  const cell = Math.max(parseFloat(voxel.value), 0.05);
-  const grid = new Map();
-  const key = (ix,iy,iz)=>`${ix},${iy},${iz}`;
-
-  for (let i=0;i<sPos.length;i+=3){
-    const x=sPos[i], y=sPos[i+1], z=sPos[i+2];
-    const ix=Math.floor(x/cell), iy=Math.floor(y/cell), iz=Math.floor(z/cell);
-    const k=key(ix,iy,iz);
-    if (!grid.has(k)) grid.set(k, []);
-    grid.get(k).push(i);
-  }
-
-  function nearestDistance(x,y,z){
-    const ix=Math.floor(x/cell), iy=Math.floor(y/cell), iz=Math.floor(z/cell);
-    let best = Infinity;
-
-    for (let dx=-1; dx<=1; dx++){
-      for (let dy=-1; dy<=1; dy++){
-        for (let dz=-1; dz<=1; dz++){
-          const list = grid.get(key(ix+dx, iy+dy, iz+dz));
-          if (!list) continue;
-          for (const idx of list){
-            const sx=sPos[idx], sy=sPos[idx+1], sz=sPos[idx+2];
-            const ddx=x-sx, ddy=y-sy, ddz=z-sz;
-            const dist = Math.sqrt(ddx*ddx + ddy*ddy + ddz*ddz);
-            if (dist < best) best = dist;
-          }
-        }
-      }
-    }
-    return best;
-  }
-
-  const distances = [];
-  for (let i=0;i<dPos.length;i+=3){
-    const nd = nearestDistance(dPos[i], dPos[i+1], dPos[i+2]);
-    if (Number.isFinite(nd)) distances.push(nd);
-  }
-
-  if (!distances.length){
-    errOutEl.textContent = "No distances computed. Check overlap / coordinate system / alignment.";
-    statusEl.textContent = "Error not computed.";
-    return;
-  }
-
-  let sum=0, sum2=0, max=0;
-  for (const v of distances){ sum += v; sum2 += v*v; max = Math.max(max, v); }
-  const mean = sum / distances.length;
-  const rmse = Math.sqrt(sum2 / distances.length);
-
-  distances.sort((a,b)=>a-b);
-  const p95 = distances[Math.floor(0.95*(distances.length-1))];
-  const p50 = distances[Math.floor(0.50*(distances.length-1))];
-
-  errOutEl.innerHTML = `
-    Count: <code>${distances.length}</code><br/>
-    Mean: <code>${mean.toFixed(4)} m</code><br/>
-    RMSE: <code>${rmse.toFixed(4)} m</code><br/>
-    Median (P50): <code>${p50.toFixed(4)} m</code><br/>
-    P95: <code>${p95.toFixed(4)} m</code><br/>
-    Max: <code>${max.toFixed(4)} m</code><br/>
-    <span style="color:rgba(255,255,255,0.75)">Approx NN depends on voxel/cell size.</span>
-  `;
-  statusEl.textContent = "Ready.";
-}
-
-// ---------- Buttons ----------
-document.getElementById('resetSection').addEventListener('click', ()=>{
-  A=null; B=null;
-  if (markerA) scene.remove(markerA);
-  if (markerB) scene.remove(markerB);
-  markerA=null; markerB=null;
-  if (sectionLine) scene.remove(sectionLine);
-  sectionLine=null;
-  clearProfile();
-});
-
-document.getElementById('recalcError').addEventListener('click', ()=>{
-  computeError();
-});
-
-document.getElementById('clearAll').addEventListener('click', ()=>{
-  staticData=null; dynamicData=null;
-  if (staticPointsObj) scene.remove(staticPointsObj);
-  if (dynamicPointsObj) scene.remove(dynamicPointsObj);
-  staticPointsObj=null; dynamicPointsObj=null;
-
-  A=null; B=null;
-  if (markerA) scene.remove(markerA);
-  if (markerB) scene.remove(markerB);
-  markerA=null; markerB=null;
-  if (sectionLine) scene.remove(sectionLine);
-  sectionLine=null;
-
-  errOutEl.textContent = "Not computed.";
-  statusEl.textContent = "Waiting for uploads…";
-  clearProfile();
-  toast("Cleared", "All data removed.");
-});
-
-// ---------- Render loop ----------
-function animate(){
-  requestAnimationFrame(animate);
-  controls.update();
-  renderer.render(scene, camera);
-}
-animate();
-
-// initial visibility
-applyLayerVisibility();
-</script>
 </body>
 </html>
-```
