@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>A-Frame GLTF/LAS Drop Viewer (Scalar Field + Auto-Ground)</title>
+  <title>A-Frame GLTF/LAS Viewer (Auto-Ground + Go To Data + RGB)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
 
@@ -14,7 +14,7 @@
       background: rgba(0,0,0,0.55); color: #fff;
       border: 1px dashed rgba(255,255,255,0.25);
       backdrop-filter: blur(8px);
-      max-width: 760px;
+      max-width: 860px;
       line-height: 1.35;
     }
     .panel.dragover { border-style: solid; }
@@ -56,8 +56,8 @@
   <div id="drop" class="panel">
     <strong>Drop files here: <span class="mono">.glb / .gltf / .las</span></strong>
     <div class="small">
-      GLB/GLTF will load as a mesh. LAS will load as a point cloud.<br/>
-      Point cloud supports scalar-field grayscale and selectable attributes.
+      GLB/GLTF loads as mesh. LAS loads as point cloud with RGB/scalar coloring.<br/>
+      After loading, the camera will automatically move to (frame) the data.
     </div>
 
     <div class="row">
@@ -73,6 +73,7 @@
       <input id="ptSize" type="range" min="1" max="10" step="1" value="2" />
       <span class="mono" id="ptSizeVal">2</span>
 
+      <button class="btn" id="goBtn">Go to data</button>
       <button class="btn" id="clearLas">Clear LAS</button>
     </div>
 
@@ -86,48 +87,87 @@
     <a-entity light="type: directional; intensity: 1.0" position="2 4 2"></a-entity>
 
     <!-- Ground at Y=0 -->
-    <a-plane rotation="-90 0 0" width="80" height="80" color="#111827"
+    <a-plane rotation="-90 0 0" width="120" height="120" color="#111827"
              material="roughness:1; metalness:0"></a-plane>
 
     <!-- Model entity -->
     <a-entity id="model" position="0 0 -3"></a-entity>
 
-    <a-entity position="0 1.6 0">
-      <a-camera wasd-controls="acceleration: 25" look-controls="pointerLockEnabled: false"></a-camera>
+    <!-- Camera rig -->
+    <a-entity id="rig" position="0 1.6 8">
+      <a-camera id="cam" wasd-controls="acceleration: 25"
+                look-controls="pointerLockEnabled: false" fov="70"></a-camera>
     </a-entity>
   </a-scene>
 
   <script>
     const drop = document.getElementById('drop');
     const statusEl = document.getElementById('status');
+
     const colorByEl = document.getElementById('colorBy');
     const ptSizeEl = document.getElementById('ptSize');
     const ptSizeVal = document.getElementById('ptSizeVal');
     const clearLasBtn = document.getElementById('clearLas');
+    const goBtn = document.getElementById('goBtn');
 
     const sceneEl = document.querySelector('a-scene');
     const modelEl = document.getElementById('model');
+    const rigEl = document.getElementById('rig');
+    const camEl = document.getElementById('cam');
 
-    let currentLas = null;        // { points, geometry, material, lasData }
-    let currentScalarMode = colorByEl.value;
+    let currentLas = null;   // { points, geometry, material, lasData }
+    let lastFocusTarget = null; // THREE.Object3D (mesh or points)
 
     function setStatus(msg){ statusEl.textContent = msg; }
 
     function isGltfLike(file){
-      const name = (file.name || '').toLowerCase();
-      return name.endsWith('.glb') || name.endsWith('.gltf');
+      const n = (file.name || '').toLowerCase();
+      return n.endsWith('.glb') || n.endsWith('.gltf');
     }
     function isLas(file){
-      const name = (file.name || '').toLowerCase();
-      return name.endsWith('.las');
+      const n = (file.name || '').toLowerCase();
+      return n.endsWith('.las');
     }
 
-    // --- Auto-ground helper
+    // --- Auto-ground helper: make minY touch Y=0
     function groundObject3D(obj3d){
       obj3d.updateWorldMatrix(true, true);
       const box = new THREE.Box3().setFromObject(obj3d);
       const minY = box.min.y;
       if (Number.isFinite(minY)) obj3d.position.y -= minY;
+    }
+
+    // --- Go to data / Frame object (camera)
+    function frameObject(obj3d){
+      if (!obj3d) return;
+
+      obj3d.updateWorldMatrix(true, true);
+      const box = new THREE.Box3().setFromObject(obj3d);
+
+      const size = new THREE.Vector3();
+      box.getSize(size);
+
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+
+      // Compute a good distance based on FOV and object size
+      const camObj = camEl.getObject3D('camera');
+      const fov = (camObj?.fov ?? 70) * Math.PI / 180.0;
+
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const fitHeightDistance = (maxDim / 2) / Math.tan(fov / 2);
+      const fitDistance = fitHeightDistance * 1.25; // padding
+
+      // Place rig so camera looks toward center from +Z direction
+      // We keep a slightly elevated view by adding some Y offset.
+      const newPos = new THREE.Vector3(center.x, center.y + maxDim * 0.15, center.z + fitDistance);
+
+      rigEl.object3D.position.copy(newPos);
+
+      // Aim camera at center
+      rigEl.object3D.lookAt(center);
+
+      setStatus('Camera moved to data.');
     }
 
     // --- GLTF loader
@@ -147,17 +187,30 @@
       if (!mesh) return;
 
       mesh.updateWorldMatrix(true, true);
+
+      // Auto-ground entity using bbox of mesh
       const box = new THREE.Box3().setFromObject(mesh);
       const minY = box.min.y;
       if (Number.isFinite(minY)) modelEl.object3D.position.y -= minY;
 
-      setStatus(`Model loaded + grounded.`);
+      // After grounding, update target + frame camera
+      // (recompute mesh bbox after shifting)
+      mesh.updateWorldMatrix(true, true);
+      lastFocusTarget = modelEl.object3D;
+      frameObject(modelEl.object3D);
+
+      setStatus('Model loaded + grounded + framed.');
+    });
+
+    modelEl.addEventListener('model-error', (e) => {
+      console.error('GLTF model error', e.detail);
+      setStatus('Error loading model.');
     });
 
     // ----------------------------
-    // LAS: Build scalar field colors
+    // LAS: attribute helpers + coloring
     // ----------------------------
-    function getAttributeArray(lasData, keys){
+    function getAttr(lasData, keys){
       for (const k of keys) {
         const v = lasData?.attributes?.[k]?.value;
         if (v && v.length) return v;
@@ -165,129 +218,124 @@
       return null;
     }
 
-    function computeMinMax(arr){
+    function computeMinMax(arr, n){
       let min = Infinity, max = -Infinity;
-      for (let i = 0; i < arr.length; i++) {
+      for (let i = 0; i < n; i++) {
         const x = arr[i];
         if (!Number.isFinite(x)) continue;
         if (x < min) min = x;
         if (x > max) max = x;
       }
-      if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {
-        // avoid division by zero
-        min = 0; max = 1;
-      }
+      if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) { min = 0; max = 1; }
       return { min, max };
     }
 
-    function ensureColorAttribute(geometry, nPoints){
-      let colorAttr = geometry.getAttribute('color');
-      if (!colorAttr || colorAttr.count !== nPoints) {
-        const colors = new Float32Array(nPoints * 3);
-        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-        colorAttr = geometry.getAttribute('color');
+    function ensureColor(geometry, n){
+      let c = geometry.getAttribute('color');
+      if (!c || c.count !== n) {
+        geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+        c = geometry.getAttribute('color');
       }
-      return colorAttr;
+      return c;
     }
 
-    function applyColorBy(mode){
+    // Attempt to interpret RGB array either as:
+    // - Uint8: 0..255
+    // - Uint16: 0..65535
+    function rgbNormalizeFactor(rgbArray){
+      // Heuristic: if max > 255, treat as 16-bit
+      let max = 0;
+      const len = Math.min(rgbArray.length, 3000); // sample
+      for (let i = 0; i < len; i++) {
+        if (rgbArray[i] > max) max = rgbArray[i];
+      }
+      return (max > 255) ? (1 / 65535.0) : (1 / 255.0);
+    }
+
+    function applyLasColoring(mode){
       if (!currentLas) return;
 
-      const { geometry, lasData } = currentLas;
+      const { geometry, material, lasData } = currentLas;
       const posAttr = geometry.getAttribute('position');
       const n = posAttr.count;
 
-      const colorAttr = ensureColorAttribute(geometry, n);
+      const colorAttr = ensureColor(geometry, n);
       const colors = colorAttr.array;
 
-      // Try RGB first (often not present)
-      const rgb = getAttributeArray(lasData, ['COLOR_0', 'COLOR', 'RGB', 'rgb']);
-      const intensity = getAttributeArray(lasData, ['INTENSITY', 'intensity']);
-      const classification = getAttributeArray(lasData, ['CLASSIFICATION', 'classification']);
+      const rgb = getAttr(lasData, ['COLOR_0', 'COLOR', 'RGB', 'rgb']);
+      const intensity = getAttr(lasData, ['INTENSITY', 'intensity']);
+      const classification = getAttr(lasData, ['CLASSIFICATION', 'classification']);
 
-      if (mode === 'rgb' && rgb && rgb.length === n * 3) {
-        // Assume 0..255
+      if (mode === 'rgb' && rgb && rgb.length >= n * 3) {
+        const k = rgbNormalizeFactor(rgb);
         for (let i = 0; i < n; i++) {
-          const r = rgb[i*3]   / 255.0;
-          const g = rgb[i*3+1] / 255.0;
-          const b = rgb[i*3+2] / 255.0;
+          const r = rgb[i*3]   * k;
+          const g = rgb[i*3+1] * k;
+          const b = rgb[i*3+2] * k;
           colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
         }
+        setStatus('LAS colored by RGB.');
       } else {
-        // Scalar field -> grayscale (default)
-        // Choose scalar source
-        let scalar = null;
-        let scalarCount = 0;
-
-        if (mode === 'intensity' && intensity) {
-          scalar = intensity;
-          scalarCount = intensity.length;
-        } else if (mode === 'classification' && classification) {
-          scalar = classification;
-          scalarCount = classification.length;
-        } else {
-          // Elevation Z from positions
-          // positions array layout: x,y,z interleaved
-          scalar = null; scalarCount = 0;
-        }
-
-        if (scalar && scalarCount >= n) {
-          const { min, max } = computeMinMax(scalar);
+        // scalar -> grayscale
+        if (mode === 'intensity' && intensity && intensity.length >= n) {
+          const { min, max } = computeMinMax(intensity, n);
           const inv = 1.0 / (max - min);
-
           for (let i = 0; i < n; i++) {
-            const v = (scalar[i] - min) * inv; // 0..1
+            const v = (intensity[i] - min) * inv;
             const g = Math.min(1, Math.max(0, v));
             colors[i*3] = g; colors[i*3+1] = g; colors[i*3+2] = g;
           }
+          setStatus('LAS colored by Intensity (grayscale).');
+        } else if (mode === 'classification' && classification && classification.length >= n) {
+          const { min, max } = computeMinMax(classification, n);
+          const inv = 1.0 / (max - min);
+          for (let i = 0; i < n; i++) {
+            const v = (classification[i] - min) * inv;
+            const g = Math.min(1, Math.max(0, v));
+            colors[i*3] = g; colors[i*3+1] = g; colors[i*3+2] = g;
+          }
+          setStatus('LAS colored by Classification (grayscale).');
         } else {
-          // Elevation Z (positions)
-          const positions = posAttr.array; // Float32Array
-          // Extract Z values
+          // elevation Z from positions
+          const p = posAttr.array;
           let zMin = Infinity, zMax = -Infinity;
           for (let i = 0; i < n; i++) {
-            const z = positions[i*3 + 2];
+            const z = p[i*3 + 2];
             if (z < zMin) zMin = z;
             if (z > zMax) zMax = z;
           }
-          if (!Number.isFinite(zMin) || !Number.isFinite(zMax) || zMin === zMax) {
-            zMin = 0; zMax = 1;
-          }
+          if (!Number.isFinite(zMin) || !Number.isFinite(zMax) || zMin === zMax) { zMin = 0; zMax = 1; }
           const inv = 1.0 / (zMax - zMin);
 
           for (let i = 0; i < n; i++) {
-            const z = positions[i*3 + 2];
+            const z = p[i*3 + 2];
             const v = (z - zMin) * inv;
             const g = Math.min(1, Math.max(0, v));
             colors[i*3] = g; colors[i*3+1] = g; colors[i*3+2] = g;
           }
+          setStatus('LAS colored by Elevation Z (grayscale).');
         }
       }
 
       colorAttr.needsUpdate = true;
-
-      // Ensure material uses vertexColors
-      currentLas.material.vertexColors = true;
-      currentLas.material.needsUpdate = true;
-
-      currentScalarMode = mode;
-      setStatus(`LAS colored by: ${mode}`);
+      material.vertexColors = true;
+      material.needsUpdate = true;
     }
 
     function setPointSize(px){
       if (!currentLas) return;
-      currentLas.material.size = px;                 // pixel-like if sizeAttenuation=false
-      currentLas.material.sizeAttenuation = false;   // keep constant pixel size
+      currentLas.material.size = px;               // pixel-like size
+      currentLas.material.sizeAttenuation = false; // constant pixel size
       currentLas.material.needsUpdate = true;
     }
 
     async function setLasFromFile(file){
       if (!window.__parseLAS) {
-        alert('LAS parser not ready. Please refresh and try again.');
+        alert('LAS parser not ready. Refresh and try again.');
         return;
       }
 
-      // Remove old LAS
+      // remove old LAS
       if (currentLas?.points) {
         sceneEl.object3D.remove(currentLas.points);
         currentLas.geometry?.dispose?.();
@@ -298,16 +346,15 @@
       setStatus(`Parsing LAS: ${file.name} ...`);
       const lasData = await window.__parseLAS(file);
 
-      const positions = getAttributeArray(lasData, ['POSITION']);
+      const positions = getAttr(lasData, ['POSITION']);
       if (!positions || positions.length < 3) {
-        setStatus('LAS parsed but no POSITION attribute found.');
+        setStatus('LAS parsed but no POSITION found.');
         return;
       }
 
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
-      // Create material with default point size = 2 (as requested), grayscale will come from vertexColors
       const material = new THREE.PointsMaterial({
         size: 2,
         sizeAttenuation: false,
@@ -317,26 +364,30 @@
       const points = new THREE.Points(geometry, material);
       points.position.set(0, 0, -3);
 
-      // Auto-ground so the point cloud sits above Y=0
+      // Auto-ground and add to scene
       groundObject3D(points);
-
       sceneEl.object3D.add(points);
 
       currentLas = { points, geometry, material, lasData };
 
-      // Apply selected coloring and point size
-      applyColorBy(colorByEl.value);
+      // Apply user settings
+      applyLasColoring(colorByEl.value);
       setPointSize(parseInt(ptSizeEl.value, 10));
 
-      setStatus(`LAS loaded + grounded: ${file.name}`);
+      // Focus camera on LAS
+      lastFocusTarget = points;
+      frameObject(points);
+
+      setStatus(`LAS loaded + grounded + framed: ${file.name}`);
     }
 
-    // UI handlers
-    colorByEl.addEventListener('change', () => applyColorBy(colorByEl.value));
+    // UI
+    colorByEl.addEventListener('change', () => applyLasColoring(colorByEl.value));
     ptSizeEl.addEventListener('input', () => {
       ptSizeVal.textContent = ptSizeEl.value;
       setPointSize(parseInt(ptSizeEl.value, 10));
     });
+
     clearLasBtn.addEventListener('click', () => {
       if (currentLas?.points) {
         sceneEl.object3D.remove(currentLas.points);
@@ -347,7 +398,12 @@
       setStatus('LAS cleared.');
     });
 
-    // Drag & drop
+    goBtn.addEventListener('click', () => {
+      if (lastFocusTarget) frameObject(lastFocusTarget);
+      else setStatus('No data to focus yet.');
+    });
+
+    // Drag/drop
     window.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('dragover'); });
     window.addEventListener('dragleave', () => drop.classList.remove('dragover'));
     window.addEventListener('drop', async (e) => {
